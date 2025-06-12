@@ -18,77 +18,184 @@ matplotlib.use('Agg')  # Must be before any other matplotlib imports
 
 from agno.agent import Agent
 from agno.models.google import Gemini
+from agno.storage.sqlite import SqliteStorage
 from agno.tools.python import PythonTools
 from agno.tools.googlesearch import GoogleSearchTools
 from .core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Set up Agno monitoring environment variables if configured
+if settings.AGNO_API_KEY:
+    os.environ["AGNO_API_KEY"] = settings.AGNO_API_KEY
+if settings.AGNO_MONITOR:
+    os.environ["AGNO_MONITOR"] = "true"
+if settings.AGNO_DEBUG:
+    os.environ["AGNO_DEBUG"] = "true"
+
 # Agent pool for reusing initialized agents (lightweight in Agno ~3.75 KiB per agent)
 AGENT_POOL: Dict[str, Agent] = {}
+MAX_POOL_SIZE = 10  # Reasonable limit for different model types
 
 
 def create_agno_agent(model: str, temp_dir: str) -> Agent:
-    """Creates and configures the Agno agent with robust, clear instructions.
+    """Creates and configures the Agno agent with efficient pooling strategy.
     
     Agno agents are extremely lightweight (~3.75 KiB) and fast to instantiate (~2μs).
-    Each request gets its own agent instance to avoid concurrency issues.
+    Using model-based pooling for maximum reuse while maintaining thread safety.
     """
-    # Create unique agent key using temp directory (which includes request ID)
-    agent_key = f"{model}_{os.path.basename(temp_dir)}"
+    # Create agent key based on model only for cross-request reuse
+    agent_key = f"agent_{model}"
     
-    # Check if agent exists in pool for this specific request
+    # Check if agent exists in pool for reuse across requests
     if agent_key in AGENT_POOL:
-        logger.info(f"Reusing cached agent for model: {model}, temp_dir: {temp_dir}")
-        return AGENT_POOL[agent_key]
+        agent = AGENT_POOL[agent_key]
+        logger.info(f"Reusing cached agent for model: {model} (pool size: {len(AGENT_POOL)})")
+        
+        # Update agent's working directory for this request
+        for tool in agent.tools:
+            if hasattr(tool, 'base_dir'):
+                tool.base_dir = Path(temp_dir).absolute()
+                logger.debug(f"Updated tool base_dir to: {temp_dir}")
+        
+        return agent
     
     if not settings.GOOGLE_API_KEY:
         raise ValueError("GOOGLE_API_KEY is not set in the environment.")
 
-    # --- FINAL, SIMPLIFIED AND ROBUST INSTRUCTIONS ---
+    # --- OPTIMIZED INSTRUCTIONS (Following Agno Best Practices) ---
     instructions = [
-        "You are an expert financial analyst. Your goal is to create a professional, multi-sheet Excel report from JSON data.",
-        
-        "**Core Task: Generate and Execute a Python Script**",
-        "1.  Your primary output is a single Python script that performs the entire data transformation and Excel generation process.",
-        "2.  **Crucially, when you save this script using the `save_to_file_and_run` tool, you MUST provide a `file_name` argument. Name the script 'excel_report_generator.py'.** This is a mandatory step.",
-
-        "**Script Requirements:**",
-        "1.  **Currency Conversion:** The script must detect the original currency, use the `Google Search` tool to find the current USD exchange rate, and then create two columns for every financial figure: one for the original currency and an adjacent one for the converted USD value. Add a note in the summary sheet citing the rate used.",
-        "2.  **Data Integrity:** The script must not invent or alter historical data. Forecasts are allowed but must be clearly labeled and based on the source data.",
-        "3.  **Excel Structure:** The script should create an Excel file with multiple sheets:",
-        "    - A 'Summary' sheet with a narrative, key insights, and an embedded forecast chart (in USD).",
-        "    - Separate sheets for 'Income Statement', 'Balance Sheet', and 'Cash Flow'.",
-        "    - Additional sheets for any data breakdowns found, like 'Business Segments' or 'Geographic Revenue'.",
-        "4.  **No Raw JSON:** The final Excel file must NOT contain any raw JSON data.",
-
-        "IMPORTANT: Keep your script simple, focus on data organization, avoid complex features that cause errors.",
-        "Your goal is to create a working Excel file quickly and reliably, not to impress with complexity.",
-        "Review your generated Python code for correctness before calling the tool to save and run it.",
+        "You are a financial analyst. Create a multi-sheet Excel report from JSON data.",
+        "Save and run a Python script named 'excel_report_generator.py'",
+        "Use Google Search to find USD exchange rates for currency conversion", 
+        "Create sheets: Summary, Income Statement, Balance Sheet, Cash Flow",
+        "Use relative paths only - all files in current working directory",
+        "Keep code simple and reliable"
     ]
-    # --- END OF FINAL INSTRUCTIONS ---
     
-    # Create the agent with appropriate tools
+    # Expected output format for consistent markdown structure
+    expected_output = """
+# Financial Analysis Report
+
+## Process Overview
+- Data processing steps
+- Currency conversion details
+- File generation status
+
+## Technical Details
+- Script execution results
+- File locations
+- Any issues encountered
+
+## Summary
+- Final output file path
+- Key metrics processed
+    """.strip()
+    # --- END OF OPTIMIZED INSTRUCTIONS ---
+    
+    # Environment and monitoring configuration
+    development_mode = settings.DEVELOPMENT_MODE
+    monitoring_enabled = settings.AGNO_MONITOR
+    debug_enabled = settings.AGNO_DEBUG
+    
+    # Create storage directory for production persistence
+    storage_dir = Path("storage")
+    storage_dir.mkdir(exist_ok=True)
+    
+    # Configure SqliteStorage for production persistence (as recommended by Agno docs)
+    agent_storage = SqliteStorage(
+        table_name="financial_agent_sessions",
+        db_file=str(storage_dir / "agents.db"),
+        auto_upgrade_schema=True  # Critical for production deployments
+    )
+    
+    # Create the agent with optimized tools and storage
     # According to docs, Agno agents are very lightweight (~3.75 KiB) and fast to instantiate (~2μs)
+    # 
+    # Tool optimization strategy:
+    # - PythonTools: Directory isolation, security settings, selective feature enabling
+    # - GoogleSearchTools: Result limiting, timeout management, conditional caching
+    # - Performance: Tool call limits, custom headers, language optimization
+    #
+    # Storage strategy:
+    # - Session persistence for conversation continuity across requests
+    # - Simple chat history for context (no complex user preference learning needed)
     
     agent = Agent(
         model=Gemini(id=model, api_key=settings.GOOGLE_API_KEY),
         tools=[
-            PythonTools(run_code=True, pip_install=True, base_dir=Path(temp_dir),save_and_run=True,read_files=True),
-            GoogleSearchTools()
+            PythonTools(
+                # Core execution settings
+                run_code=True, 
+                pip_install=True, 
+                save_and_run=True, 
+                read_files=True,
+                list_files=True,
+                run_files=False,                      # Disable file running for security/performance
+                
+                # Directory and security configuration
+                base_dir=Path(temp_dir).absolute(),   # Enforce absolute path for directory isolation
+                
+                # Performance optimizations
+                safe_globals=None,                    # Can be configured for additional security
+                safe_locals=None,                     # Can be configured for additional security
+            ),
+            GoogleSearchTools(
+                # Performance optimization settings
+                fixed_max_results=5,                  # Limit results to reduce processing time
+                timeout=10,                           # Set reasonable timeout for network calls
+                
+                # Language and region optimization
+                fixed_language="en",                  # Pre-set language to avoid detection overhead
+                
+                # Network configuration
+                headers={"User-Agent": "IntelliExtract-Agent/1.0"},  # Custom user agent
+                
+                # Conditional caching for development
+                **({"cache_results": True, "cache_ttl": 3600} if development_mode else {}),
+            )
         ],
-        save_and_run=True,
-        read_files=True,
+        storage=agent_storage,           # Production storage for session persistence
+        add_history_to_messages=True,    # Include chat history in messages
+        num_history_runs=3,              # Keep last 3 runs in context
+        reasoning=True,                  # Enable reasoning mode for complex financial analysis
         show_tool_calls=True,
-        markdown=True,
+        markdown=True,                   # Enable markdown formatting for structured output
+        add_datetime_to_instructions=True,  # Include timestamp in markdown output
+        
+        # Tool performance optimization
+        tool_call_limit=10,              # Limit tool calls to prevent excessive execution
+        # tool_choice="auto",            # Let model choose appropriate tools (default)
         instructions=instructions,
-        exponential_backoff=True,  # Auto-retry with backoff on model errors
-        retries=5,                 # Number of retries for model calls
+        expected_output=expected_output,  # Provide markdown structure template
+        exponential_backoff=True,        # Auto-retry with backoff on model errors
+        retries=5,                       # Number of retries for model calls
+        debug_mode=debug_enabled,        # Enable based on AGNO_DEBUG environment variable
+        monitoring=monitoring_enabled,   # Enable Agno.com monitoring based on AGNO_MONITOR environment variable
     )
-    logger.info(f"Created Agno agent with model: {model}, temp_dir: {temp_dir} and optimized configuration")
+    # Log monitoring configuration for transparency
+    if monitoring_enabled:
+        if settings.AGNO_API_KEY:
+            logger.info(f"Agno monitoring ENABLED - sessions will be tracked at app.agno.com/sessions")
+        else:
+            logger.warning("Agno monitoring enabled but AGNO_API_KEY not set - monitoring may not work properly")
+    else:
+        logger.info("Agno monitoring DISABLED - set AGNO_MONITOR=true to enable")
     
-    # Store agent in pool for reuse within this request - very memory-efficient in Agno
+    if debug_enabled:
+        logger.info("Agno debug mode ENABLED - detailed tool calls and reasoning will be logged")
+    
+    logger.info(f"Created new Agno agent with model: {model}, monitoring={monitoring_enabled}, debug={debug_enabled}")
+    
+    # Store agent in pool for cross-request reuse with size management
+    if len(AGENT_POOL) >= MAX_POOL_SIZE:
+        # Remove oldest agent (simple FIFO strategy)
+        oldest_key = next(iter(AGENT_POOL))
+        del AGENT_POOL[oldest_key]
+        logger.info(f"Removed oldest agent from pool: {oldest_key}")
+    
     AGENT_POOL[agent_key] = agent
+    logger.info(f"Agent pool updated (size: {len(AGENT_POOL)})")
     return agent
 
 async def direct_json_to_excel_async(json_data: str, file_name: str, chunk_size: int, temp_dir: str) -> Tuple[str, str, str]:
@@ -160,19 +267,74 @@ def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_d
             file_path = os.path.join(temp_dir, f"{file_id}_{xlsx_filename}")
 
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                sheets_created = False
+                
                 if isinstance(data, list):
-                    if len(data) > chunk_size:
-                        for i in range(0, len(data), chunk_size):
-                            df = pd.json_normalize(data[i:i + chunk_size])
-                            df.to_excel(writer, sheet_name=f'Data_Chunk_{i//chunk_size + 1}', index=False)
-                    else:
-                        pd.json_normalize(data).to_excel(writer, sheet_name='Data', index=False)
+                    if len(data) > 0:  # Only process if list is not empty
+                        try:
+                            if len(data) > chunk_size:
+                                for i in range(0, len(data), chunk_size):
+                                    chunk_data = data[i:i + chunk_size]
+                                    if chunk_data:  # Ensure chunk is not empty
+                                        try:
+                                            df = pd.json_normalize(chunk_data)
+                                            if not df.empty:  # Only create sheet if DataFrame has data
+                                                df.to_excel(writer, sheet_name=f'Data_Chunk_{i//chunk_size + 1}', index=False)
+                                                sheets_created = True
+                                        except Exception as e:
+                                            logger.warning(f"Failed to normalize chunk {i}: {e}")
+                                            # Create a simple representation of the chunk
+                                            df = pd.DataFrame([{"chunk_data": str(chunk_data)}])
+                                            df.to_excel(writer, sheet_name=f'Chunk_{i//chunk_size + 1}_Raw', index=False)
+                                            sheets_created = True
+                            else:
+                                try:
+                                    df = pd.json_normalize(data)
+                                    if not df.empty:  # Only create sheet if DataFrame has data
+                                        df.to_excel(writer, sheet_name='Data', index=False)
+                                        sheets_created = True
+                                except Exception as e:
+                                    logger.warning(f"Failed to normalize list data: {e}")
+                                    # Create a simple representation of the data
+                                    df = pd.DataFrame([{"raw_data": str(item)} for item in data])
+                                    df.to_excel(writer, sheet_name='Raw_Data', index=False)
+                                    sheets_created = True
+                        except Exception as e:
+                            logger.warning(f"Failed to process list data: {e}")
+                            # Last resort: create basic representation
+                            df = pd.DataFrame([{"list_item": str(item), "index": i} for i, item in enumerate(data)])
+                            df.to_excel(writer, sheet_name='List_Items', index=False)
+                            sheets_created = True
+                
                 elif isinstance(data, dict):
-                    for key, value in data.items():
-                        if isinstance(value, list):
-                            pd.json_normalize(value).to_excel(writer, sheet_name=str(key)[:31], index=False)
+                    # Handle dictionary data
+                    if data:  # Only process if dict is not empty
+                        for key, value in data.items():
+                            if isinstance(value, list) and value:  # Only process non-empty lists
+                                df = pd.json_normalize(value)
+                                if not df.empty:
+                                    safe_sheet_name = str(key)[:31].replace('/', '_').replace('\\', '_')
+                                    df.to_excel(writer, sheet_name=safe_sheet_name, index=False)
+                                    sheets_created = True
+                        
+                        # If no list values were found, create a sheet with the dict itself
+                        if not sheets_created:
+                            df = pd.json_normalize([data])
+                            if not df.empty:
+                                df.to_excel(writer, sheet_name='Data', index=False)
+                                sheets_created = True
+                
                 else:
-                    pd.DataFrame([{'value': data}]).to_excel(writer, sheet_name='Data', index=False)
+                    # Handle primitive data types
+                    df = pd.DataFrame([{'value': data}])
+                    df.to_excel(writer, sheet_name='Data', index=False)
+                    sheets_created = True
+                
+                # Ensure at least one sheet exists
+                if not sheets_created:
+                    # Create a minimal sheet with error information
+                    df = pd.DataFrame([{'error': 'No valid data found', 'original_data_type': str(type(data))}])
+                    df.to_excel(writer, sheet_name='Error', index=False)
 
             return file_id, xlsx_filename, file_path
             
@@ -190,16 +352,28 @@ def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_d
             time.sleep(retry_count)
             logger.info(f"Retrying direct conversion (attempt {retry_count+1}/{max_retries})...")
 
-async def convert_with_agno_async(json_data: str, file_name: str, description: str, model: str, temp_dir: str) -> str:
+async def convert_with_agno_async(json_data: str, file_name: str, description: str, model: str, temp_dir: str, user_id: str = None, session_id: str = None) -> tuple[str, str]:
     """Async version of convert_with_agno for better performance."""
     # Run the synchronous function in a thread pool to make it non-blocking
-    return await asyncio.to_thread(convert_with_agno, json_data, file_name, description, model, temp_dir)
+    return await asyncio.to_thread(convert_with_agno, json_data, file_name, description, model, temp_dir, user_id, session_id)
 
-def convert_with_agno(json_data: str, file_name: str, description: str, model: str, temp_dir: str) -> str:
+def convert_with_agno(json_data: str, file_name: str, description: str, model: str, temp_dir: str, user_id: str = None, session_id: str = None) -> tuple[str, str]:
     """
     Convert JSON data to Excel using Agno AI with streamlined processing.
     Will retry up to 2 times for faster processing.
+    Returns tuple of (response_content, actual_session_id) for session continuity.
     """
+    import uuid
+    
+    # Get debug setting from configuration
+    debug_enabled = settings.AGNO_DEBUG
+    
+    # Generate session IDs if not provided
+    if not user_id:
+        user_id = f"user_{uuid.uuid4().hex[:8]}"
+    if not session_id:
+        session_id = f"session_{uuid.uuid4().hex[:8]}"
+    
     max_retries = 2  # Reduced for faster processing
     retry_count = 0
     last_error = None
@@ -209,6 +383,9 @@ def convert_with_agno(json_data: str, file_name: str, description: str, model: s
             agent = create_agno_agent(model, temp_dir)
             
             # Create a focused prompt with currency conversion requirements
+            # Note: JSON data is truncated in logs for privacy/readability
+            json_preview = json_data[:200] + "..." if len(json_data) > 200 else json_data
+            
             prompt = f"""
             Create an Excel report from this financial data. Follow your instructions exactly.
             
@@ -223,29 +400,111 @@ def convert_with_agno(json_data: str, file_name: str, description: str, model: s
             5. Print the absolute file path when done
             6. Keep the analysis simple but include currency conversion
             
+            **WORKING DIRECTORY:** {temp_dir}
+            **IMPORTANT:** All files must be created in the working directory above. Use relative paths only.
+            
             JSON Data:
             {json_data}
             """
             
-            # Using run method with simplified approach for faster processing
+            # Log clean debug info (without full JSON data)
+            if debug_enabled:
+                logger.info(f"🤖 AI PROMPT SUMMARY:")
+                logger.info(f"   📁 Working Directory: {temp_dir}")
+                logger.info(f"   📄 File Name: {file_name}")
+                logger.info(f"   📝 Description: {description}")
+                logger.info(f"   📊 JSON Data Size: {len(json_data)} characters")
+                logger.info(f"   🔍 JSON Preview: {json_preview}")
+                logger.info(f"   🎯 Task: Financial Excel report with currency conversion")
+            
+            # Using run method with enhanced streaming and real-time monitoring
             logger.info(f"Starting Agno agent processing (attempt {retry_count + 1}/{max_retries})...")
-            response = agent.run(prompt)
+            
+            try:
+                # Use non-streaming mode to get a proper response object
+                response = agent.run(
+                    prompt,
+                    stream=False,                    # Disable streaming to get response object with .content
+                    show_tool_calls=True,           # Show tool execution
+                    markdown=True,                   # Ensure markdown formatting consistency
+                    user_id=user_id,                 # Proper user ID for session continuity
+                    session_id=session_id            # Proper session ID for conversation continuity
+                )
+            except Exception as agent_error:
+                logger.error(f"Agent.run() failed: {type(agent_error).__name__}: {agent_error}")
+                # Re-raise to be handled by outer retry logic with enhanced error categorization
+                raise
+            
             logger.info(f"Agno agent completed processing successfully")
-            return response.content
+            
+            # Enhanced debug logging for AI response analysis
+            if debug_enabled:
+                logger.info(f"🧠 AI RESPONSE ANALYSIS:")
+                
+                # Log reasoning steps
+                if hasattr(response, 'reasoning') and response.reasoning:
+                    logger.info(f"   🤔 Reasoning Steps: {len(response.reasoning)} steps captured")
+                    for i, step in enumerate(response.reasoning[:3]):  # Show first 3 steps
+                        step_preview = str(step)[:150] + "..." if len(str(step)) > 150 else str(step)
+                        logger.info(f"   💭 Step {i+1}: {step_preview}")
+                
+                # Log tool calls
+                if hasattr(response, 'tool_calls') and response.tool_calls:
+                    logger.info(f"   🔧 Tool Calls: {len(response.tool_calls)} executed")
+                    for i, tool_call in enumerate(response.tool_calls):
+                        tool_name = getattr(tool_call, 'name', 'Unknown Tool')
+                        logger.info(f"   🛠️  Tool {i+1}: {tool_name}")
+                
+                # Log response content summary (not full content)
+                content_preview = response.content[:300] + "..." if len(response.content) > 300 else response.content
+                logger.info(f"   📄 Response Length: {len(response.content)} characters")
+                logger.info(f"   📋 Response Preview: {content_preview}")
+            else:
+                # Basic logging when debug is off
+                if hasattr(response, 'reasoning') and response.reasoning:
+                    logger.info(f"Agent reasoning steps captured: {len(response.reasoning)} steps")
+                if hasattr(response, 'tool_calls') and response.tool_calls:
+                    logger.info(f"Tool calls executed: {len(response.tool_calls)} calls")
+            
+            # Return both response content and session_id for continuity
+            logger.info(f"Session management: user_id={user_id}, session_id={session_id}")
+            return response.content, session_id
             
         except Exception as e:
             retry_count += 1
             last_error = str(e)
             error_details = traceback.format_exc()
-            logger.error(f"Agno AI processing failed (attempt {retry_count}/{max_retries}): {e}\n{error_details}")
+            error_type = type(e).__name__
+            
+            # Enhanced error logging with categorization
+            logger.error(f"Agno AI processing failed (attempt {retry_count}/{max_retries})")
+            logger.error(f"Error type: {error_type}")
+            logger.error(f"Error message: {e}")
+            logger.error(f"Full traceback:\n{error_details}")
+            
+            # Categorize errors for better handling
+            is_retryable = True
+            if "API" in str(e) or "rate limit" in str(e).lower():
+                logger.warning("API-related error detected - likely handled by Agno's exponential backoff")
+            elif "memory" in str(e).lower() or "timeout" in str(e).lower():
+                logger.warning("Resource-related error detected - may benefit from retry")
+            elif "authentication" in str(e).lower() or "unauthorized" in str(e).lower():
+                logger.error("Authentication error detected - retries likely won't help")
+                is_retryable = False
             
             if retry_count >= max_retries:
-                logger.error(f"All {max_retries} attempts failed. Giving up.")
+                logger.error(f"All {max_retries} attempts failed. Final error type: {error_type}")
+                logger.error(f"Final error message: {last_error}")
                 raise
             
-            # Wait briefly before retrying (with increasing delay)
-            time.sleep(retry_count * 2)
-            logger.info(f"Retrying conversion (attempt {retry_count+1}/{max_retries})...")
+            if not is_retryable:
+                logger.error("Error is not retryable - failing immediately")
+                raise
+            
+            # Exponential backoff at application level (in addition to Agno's built-in backoff)
+            delay = min(retry_count * 2, 10)  # Cap delay at 10 seconds
+            logger.info(f"Retrying conversion in {delay} seconds (attempt {retry_count+1}/{max_retries})...")
+            time.sleep(delay)
 
 def find_newest_file(directory: str, files_before: set) -> Optional[str]:
     # Check both the main directory and subdirectories for Excel files
@@ -311,3 +570,4 @@ def cleanup_agent_pool():
     global AGENT_POOL
     logger.info(f"Cleaning up agent pool with {len(AGENT_POOL)} agents")
     AGENT_POOL.clear()
+

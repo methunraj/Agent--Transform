@@ -1,6 +1,6 @@
-# Enhanced Agno API
+# IntelliExtract Agno AI Backend
 
-A high-performance API for converting JSON data to Excel files using Agno's AI capabilities.
+A production-ready API for converting JSON data to Excel files using Agno's AI capabilities with advanced monitoring and session management.
 
 ## Performance Optimizations
 
@@ -50,18 +50,30 @@ Based on Agno documentation and benchmarks:
 | Agent Instantiation | ~2μs | ~20ms | ~10,000x faster |
 | Memory Per Agent | ~3.75 KiB | ~137 KiB | ~50x lighter |
 
-## Usage
+## Quick Start
 
-Install dependencies:
-
+1. **Install dependencies:**
 ```bash
 pip install -r requirements.txt
 ```
 
-Run the server:
-
+2. **Configure environment:**
 ```bash
+cp .env.example .env
+# Edit .env and add your GOOGLE_API_KEY
+```
+
+3. **Start the server:**
+```bash
+python start_server.py
+# OR manually:
 uvicorn app.main:app --reload
+```
+
+4. **Test the API:**
+```bash
+python run_tests.py smoke  # Quick test
+python run_tests.py full   # Comprehensive test suite
 ```
 
 API endpoints:
@@ -72,10 +84,67 @@ API endpoints:
 
 ## Configuration
 
-Environment variables:
+Copy `.env.example` to `.env` and configure:
 
+### Required Variables
 - `GOOGLE_API_KEY` - Required for Gemini model access
+
+### Optional Monitoring Variables
+- `AGNO_API_KEY` - For Agno platform monitoring (get from https://app.agno.com/settings)
+- `AGNO_MONITOR` - Set to `true` to enable monitoring at app.agno.com/sessions
+- `AGNO_DEBUG` - Set to `true` to enable detailed debugging logs
+- `DEVELOPMENT_MODE` - Set to `true` for development features (search caching)
 - `LOG_LEVEL` - Logging level (default: INFO)
+
+## Testing
+
+The backend includes a comprehensive test suite to validate all functionality:
+
+### Test Types
+
+1. **Smoke Test** (Quick validation):
+```bash
+python run_tests.py smoke
+```
+
+2. **Comprehensive Test Suite** (Full validation):
+```bash
+python run_tests.py full
+```
+
+3. **Server Health Check**:
+```bash
+python run_tests.py check
+```
+
+### Test Coverage
+
+The test suite includes:
+
+- **Valid JSON Structures**: Simple dictionaries, arrays, complex nested data, multi-currency data, time series, large datasets, Unicode characters
+- **Invalid JSON Cases**: Malformed JSON, syntax errors, empty data, mixed valid/invalid content
+- **Edge Cases**: Very large numbers, null values, deeply nested structures, mixed data types
+- **Processing Modes**: Tests for `auto`, `ai_only`, and `direct_only` modes
+- **Error Handling**: Network timeouts, API failures, invalid parameters
+
+### Manual Testing
+
+You can also test individual endpoints manually:
+
+```bash
+# Test basic processing
+curl -X POST "http://localhost:8000/process" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "json_data": "{\"company\": \"Test Corp\", \"revenue\": 1000000, \"currency\": \"USD\"}",
+    "file_name": "test_file",
+    "description": "Test data",
+    "processing_mode": "direct_only"
+  }'
+
+# Get system metrics
+curl "http://localhost:8000/metrics"
+```
 
 ## Dependencies
 

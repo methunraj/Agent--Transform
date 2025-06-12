@@ -106,12 +106,9 @@ async def process_json_data(request: schemas.ProcessRequest, background_tasks: B
                 shutil.rmtree(request_temp_dir)
                 logger.info(f"Cleaned up request temp directory: {request_temp_dir}")
             
-            # Clean up request-specific agents from pool
-            request_dir_name = os.path.basename(request_temp_dir)
-            agents_to_remove = [key for key in services.AGENT_POOL.keys() if request_dir_name in key]
-            for agent_key in agents_to_remove:
-                del services.AGENT_POOL[agent_key]
-                logger.info(f"Cleaned up agent from pool: {agent_key}")
+            # Note: Agents are now pooled by model and reused across requests
+            # No per-request cleanup needed - agents persist for efficiency
+            logger.debug(f"Agent pool maintained for reuse (size: {len(services.AGENT_POOL)})")
                 
         except Exception as e:
             logger.warning(f"Failed to cleanup request resources for {request_temp_dir}: {e}")
@@ -123,12 +120,14 @@ async def process_json_data(request: schemas.ProcessRequest, background_tasks: B
         if request.processing_mode in ["auto", "ai_only"]:
             try:
                 # Use async version for better performance with isolated temp directory
-                ai_response_content = await services.convert_with_agno_async(
+                ai_response_content, actual_session_id = await services.convert_with_agno_async(
                     request.json_data,
                     request.file_name,
                     request.description,
-                    request.model,
-                    request_temp_dir  # Use isolated directory for this request
+                    request.model or settings.DEFAULT_AI_MODEL,  # Use default model if none specified
+                    request_temp_dir,  # Use isolated directory for this request
+                    request.user_id,   # Pass user ID for session management
+                    request.session_id # Pass session ID for conversation continuity
                 )
                 
                 newest_file = services.find_newest_file(request_temp_dir, files_before)
@@ -150,7 +149,9 @@ async def process_json_data(request: schemas.ProcessRequest, background_tasks: B
                         success=True, file_id=file_id, file_name=original_filename,
                         download_url=f"/download/{file_id}", ai_analysis=ai_response_content,
                         processing_method=processing_method, processing_time=processing_time,
-                        data_size=len(request.json_data)
+                        data_size=len(request.json_data),
+                        user_id=request.user_id or f"user_{request_id}",  # Return user_id for session continuity
+                        session_id=actual_session_id                     # Return actual session_id used
                     )
                 
                 logger.warning(f"AI processing completed but no new file was found. Falling back to direct conversion.")
@@ -178,7 +179,9 @@ async def process_json_data(request: schemas.ProcessRequest, background_tasks: B
         return schemas.ProcessResponse(
             success=True, file_id=file_id, file_name=xlsx_filename,
             download_url=f"/download/{file_id}", processing_method=processing_method,
-            processing_time=processing_time, data_size=len(request.json_data)
+            processing_time=processing_time, data_size=len(request.json_data),
+            user_id=request.user_id or f"user_{request_id}",  # Return user_id for consistency
+            session_id=request.session_id or f"session_{request_id}"  # Return session_id for direct conversions
         )
 
     except Exception as e:
@@ -211,13 +214,18 @@ async def get_system_metrics():
     success_rate = (metrics['successful_conversions'] / max(metrics['total_requests'], 1)) * 100
     
     return schemas.SystemMetrics(
-        **metrics,
+        total_requests=metrics['total_requests'],
+        successful_conversions=metrics['successful_conversions'],
+        ai_conversions=metrics['ai_conversions'],
+        direct_conversions=metrics['direct_conversions'],
+        failed_conversions=metrics['failed_conversions'],
         success_rate=round(success_rate, 2),
         average_processing_time=round(metrics['average_processing_time'], 2),
         active_files=active_files,
         temp_directory=app_state["TEMP_DIR"]
     )
 
+
 @app.get("/")
 async def root():
-    return {"message": "Welcome to the Enhanced Agno AI API. See /docs for more info."}
+    return {"message": "Welcome to the IntelliExtract Agno AI API for Financial Document Processing. See /docs for more info."}
