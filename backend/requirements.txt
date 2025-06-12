@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+pandas
+openpyxl
+agno>=0.22.0
+python-dotenv
+googlesearch-python
+pycountry
+orjson>=3.9.0
+asyncio
+aiofiles
