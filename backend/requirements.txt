@@ -1,0 +1,56 @@
+# Core Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Configuration Management
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# Data Processing
+pandas>=2.0.0
+openpyxl>=3.1.0
+orjson>=3.9.0
+matplotlib>=3.7.0
+seaborn>=0.12.0  # For enhanced chart styling and color palettes
+pillow>=10.0.0   # For image processing in charts
+
+# AI Framework
+agno>=0.22.0
+
+# HTTP and Async
+aiofiles>=23.0.0
+httpx>=0.25.0
+
+# Utilities
+pycountry>=22.0.0
+
+# Search Tools (used by Agno GoogleSearchTools)
+googlesearch-python>=1.2.0
+google-genai
+
+# Development Dependencies (optional)
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# isort>=5.12.0
+
+# Testing Framework
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.11.0
+# httpx>=0.25.0  # Already included above
+
+# Code Quality
+black>=23.0.0
+isort>=5.12.0
+flake8>=6.0.0
+mypy>=1.5.0
+sqlalchemy
+
+# Development Tools
+# python-dotenv>=1.0.0  # Already included above
+ipython>=8.0.0  # For interactive debugging
+
+# Additional testing utilities
+requests>=2.31.0  # For the test.py script
