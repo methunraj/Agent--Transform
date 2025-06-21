@@ -474,7 +474,7 @@ async def websocket_job_updates(websocket: WebSocket, job_id: str):
                 # This is a way to pause and allow other tasks to run,
                 # and also to periodically check the connection state.
                 # If client sends data, it would be caught here.
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=settings.WEBSOCKET_KEEP ALIVE_TIMEOUT_SECONDS)
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=settings.WEBSOCKET_KEEP_ALIVE_TIMEOUT_SECONDS)
                 # If you expect client messages, process `data` here.
                 # e.g., if data == "CANCEL", then await job_manager.cancel_job(job_id)
                 logger.info(f"WebSocket for job {job_id} received message: {data}")
@@ -626,6 +626,97 @@ async def get_system_metrics():
     )
 
 
+@app.get("/performance-metrics", response_model=dict)
+async def get_performance_metrics():
+    """
+    PERFORMANCE MONITORING: Get detailed performance metrics for optimization tracking.
+    
+    Tracks:
+    - Agent pool performance (cache hits, creation times)
+    - Model usage statistics
+    - Processing speed metrics
+    - Memory usage optimization
+    """
+    try:
+        # Import performance metrics from services
+        from .services import AGENT_PERFORMANCE_METRICS, AGENT_POOL
+        
+        # Calculate agent pool statistics
+        cache_hit_rate = 0
+        total_requests = AGENT_PERFORMANCE_METRICS["cache_hits"] + AGENT_PERFORMANCE_METRICS["cache_misses"]
+        if total_requests > 0:
+            cache_hit_rate = (AGENT_PERFORMANCE_METRICS["cache_hits"] / total_requests) * 100
+        
+        # Calculate average times
+        avg_creation_time = 0
+        avg_reuse_time = 0
+        
+        if AGENT_PERFORMANCE_METRICS["creation_time_ms"]:
+            avg_creation_time = sum(AGENT_PERFORMANCE_METRICS["creation_time_ms"]) / len(AGENT_PERFORMANCE_METRICS["creation_time_ms"])
+        
+        if AGENT_PERFORMANCE_METRICS["reuse_time_ms"]:
+            avg_reuse_time = sum(AGENT_PERFORMANCE_METRICS["reuse_time_ms"]) / len(AGENT_PERFORMANCE_METRICS["reuse_time_ms"])
+        
+        # Calculate speed improvement
+        speed_improvement_factor = 0
+        if avg_creation_time > 0 and avg_reuse_time > 0:
+            speed_improvement_factor = avg_creation_time / avg_reuse_time
+        
+        # Memory efficiency (estimate based on pool usage)
+        pool_utilization = len(AGENT_POOL) / AGENT_POOL.maxsize * 100 if AGENT_POOL.maxsize > 0 else 0
+        
+        performance_data = {
+            "agent_pool_performance": {
+                "cache_hit_rate_percent": round(cache_hit_rate, 2),
+                "cache_hits": AGENT_PERFORMANCE_METRICS["cache_hits"],
+                "cache_misses": AGENT_PERFORMANCE_METRICS["cache_misses"],
+                "total_agent_requests": total_requests,
+                "pool_size": len(AGENT_POOL),
+                "pool_max_size": AGENT_POOL.maxsize,
+                "pool_utilization_percent": round(pool_utilization, 2)
+            },
+            "timing_performance": {
+                "avg_agent_creation_time_ms": round(avg_creation_time, 2),
+                "avg_agent_reuse_time_ms": round(avg_reuse_time, 2),
+                "speed_improvement_factor": round(speed_improvement_factor, 1),
+                "performance_target_met": avg_reuse_time < 5.0  # Target: <5ms reuse time
+            },
+            "optimization_status": {
+                "agent_pooling_enabled": True,
+                "streaming_json_enabled": True,
+                "auto_retry_enabled": True,
+                "fast_model_selection_enabled": True,
+                "performance_monitoring_enabled": True
+            },
+            "recommendations": []
+        }
+        
+        # Add performance recommendations
+        if cache_hit_rate < 70:
+            performance_data["recommendations"].append("Consider increasing agent pool size for better cache hit rate")
+        
+        if avg_reuse_time > 5.0:
+            performance_data["recommendations"].append("Agent reuse time is higher than optimal - check for storage contention")
+        
+        if pool_utilization > 90:
+            performance_data["recommendations"].append("Agent pool near capacity - consider increasing MAX_POOL_SIZE")
+        
+        if not performance_data["recommendations"]:
+            performance_data["recommendations"].append("Performance is optimal! 🚀")
+        
+        return performance_data
+        
+    except Exception as e:
+        logger.error(f"Error fetching performance metrics: {e}")
+        return {
+            "error": "Failed to fetch performance metrics",
+            "agent_pool_performance": {},
+            "timing_performance": {},
+            "optimization_status": {},
+            "recommendations": ["Check system logs for performance monitoring errors"]
+        }
+
+
 @app.get("/")
 async def root():
     return {"message": "Welcome to the IntelliExtract Agno AI API. Asynchronous processing available. See /docs for more info."}
@@ -692,56 +783,3 @@ async def get_available_models():
         # However, list_available_models is designed to have its own fallback.
         # If it still raises an exception, it's a more critical issue.
         raise HTTPException(status_code=500, detail=f"Could not retrieve model list: {str(e)}")
-async def get_system_metrics():
-    with app_state["LOCK"]:
-        metrics = app_state["METRICS"].copy()
-        active_files = len(app_state["TEMP_FILES"])
-
-    success_rate = (metrics['successful_conversions'] / max(metrics['total_requests'], 1)) * 100
-    
-    return schemas.SystemMetrics(
-        total_requests=metrics['total_requests'],
-        successful_conversions=metrics['successful_conversions'],
-        ai_conversions=metrics['ai_conversions'],
-        direct_conversions=metrics['direct_conversions'],
-        failed_conversions=metrics['failed_conversions'],
-        success_rate=round(success_rate, 2),
-        average_processing_time=round(metrics['average_processing_time'], 2),
-        active_files=active_files,
-        temp_directory=app_state["TEMP_DIR"]
-    )
-
-
-@app.get("/")
-async def root():
-    return {"message": "Welcome to the IntelliExtract Agno AI API for Financial Document Processing. See /docs for more info."}
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint for monitoring and load balancers."""
-    health_status = {
-        "status": "healthy",
-        "version": settings.APP_VERSION,
-        "temp_directory_exists": os.path.exists(app_state.get("TEMP_DIR", "")),
-        "agent_pool_size": len(services.AGENT_POOL),
-        "active_files": len(app_state.get("TEMP_FILES", {})),
-    }
-    
-    # Check Google API key availability
-    health_status["google_api_configured"] = bool(settings.GOOGLE_API_KEY)
-    
-    # Check temp directory is writable
-    try:
-        test_file = os.path.join(app_state.get("TEMP_DIR", "/tmp"), "health_check.tmp")
-        with open(test_file, "w") as f:
-            f.write("test")
-        os.remove(test_file)
-        health_status["temp_directory_writable"] = True
-    except:
-        health_status["temp_directory_writable"] = False
-        health_status["status"] = "degraded"
-    
-    # Return appropriate status code
-    status_code = 200 if health_status["status"] == "healthy" else 503
-    return JSONResponse(content=health_status, status_code=status_code)
