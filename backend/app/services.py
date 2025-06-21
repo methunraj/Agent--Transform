@@ -11,6 +11,8 @@ import pandas as pd
 from pathlib import Path
 import asyncio
 import traceback
+import aiofiles
+import aiofiles.os
 from functools import lru_cache
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -33,18 +35,19 @@ if settings.AGNO_API_KEY:
 # --- Disk Space Check Configuration & Helper ---
 MIN_FREE_SPACE_BYTES = settings.MIN_DISK_SPACE_MB * 1024 * 1024 if hasattr(settings, 'MIN_DISK_SPACE_MB') and settings.MIN_DISK_SPACE_MB > 0 else 50 * 1024 * 1024  # Default 50MB
 
-def _has_sufficient_disk_space(path: str, required_bytes: int) -> bool:
-    """Checks if the specified path has at least required_bytes of free disk space."""
+async def _has_sufficient_disk_space_async(path: str, required_bytes: int) -> bool:
+    """Async version: Checks if the specified path has at least required_bytes of free disk space."""
     try:
         # Ensure the path (or its parent for a file path) exists for disk_usage
         check_path = path
-        if not os.path.exists(check_path):
+        if not await aiofiles.os.path.exists(check_path):
             check_path = os.path.dirname(check_path)
-            if not os.path.exists(check_path): # If parent also doesn't exist, tempfile.gettempdir() as last resort
+            if not await aiofiles.os.path.exists(check_path): # If parent also doesn't exist, tempfile.gettempdir() as last resort
                 check_path = Path(tempfile.gettempdir())
                 logger.warning(f"Path {path} and its parent do not exist. Checking disk space for system temp {check_path}.")
 
-        total, used, free = shutil.disk_usage(check_path)
+        # shutil.disk_usage is not async, so we run it in a thread
+        total, used, free = await asyncio.to_thread(shutil.disk_usage, check_path)
         logger.debug(f"Disk usage for partition of {check_path}: Total={total // (1024*1024)}MB, Used={used // (1024*1024)}MB, Free={free // (1024*1024)}MB. Required free: {required_bytes // (1024*1024)}MB")
         if free < required_bytes:
             logger.warning(f"Insufficient disk space. Free: {free // (1024*1024)}MB, Required: {required_bytes // (1024*1024)}MB for path based on {check_path}")
@@ -56,6 +59,10 @@ def _has_sufficient_disk_space(path: str, required_bytes: int) -> bool:
     except Exception as e:
         logger.error(f"Could not check disk space for {path} (checking on {check_path if 'check_path' in locals() else path}): {e}", exc_info=True)
         return False # Fail safe: if we can't check, assume not enough space
+
+def _has_sufficient_disk_space(path: str, required_bytes: int) -> bool:
+    """Synchronous version: Checks if the specified path has at least required_bytes of free disk space."""
+    return asyncio.run(_has_sufficient_disk_space_async(path, required_bytes))
 
 
 # --- Agent Pool & Creation ---
@@ -277,9 +284,84 @@ async def direct_json_to_excel_async(json_data: str, file_name: str, chunk_size:
     return await asyncio.to_thread(direct_json_to_excel, json_data, file_name, chunk_size, temp_dir)
 
 
+async def process_large_json_streaming(json_data: str, chunk_size: int) -> List[Any]:
+    """
+    Process large JSON data using streaming to avoid loading everything into memory at once.
+    Returns a list of processed objects.
+    """
+    # Estimate if we need streaming based on data size (>10MB)
+    data_size_mb = len(json_data.encode('utf-8')) / (1024 * 1024)
+    if data_size_mb < 10:
+        # For smaller data, use regular JSON parsing
+        return await asyncio.to_thread(json.loads, json_data)
+    
+    logger.info(f"Large JSON detected ({data_size_mb:.1f}MB), using memory-optimized processing")
+    
+    try:
+        # Try to use ijson for streaming if available
+        try:
+            import ijson
+            from io import StringIO
+            
+            json_stream = StringIO(json_data)
+            data_objects = []
+            
+            # Try to parse as array first
+            try:
+                parser = await asyncio.to_thread(lambda: list(ijson.items(json_stream, 'item')))
+                return parser
+                
+            except (ijson.JSONError, ValueError):
+                # If array parsing fails, try parsing as single object
+                json_stream.seek(0)
+                obj = await asyncio.to_thread(json.loads, json_stream.read())
+                return [obj] if obj else []
+                
+        except ImportError:
+            logger.warning("ijson not available, using chunked processing fallback")
+            # Fallback to chunk-based processing
+            return await _chunk_process_json_fallback(json_data, chunk_size)
+            
+    except Exception as e:
+        logger.error(f"Streaming JSON processing failed: {e}, using regular parsing")
+        # Ultimate fallback
+        return await asyncio.to_thread(json.loads, json_data)
+
+async def _chunk_process_json_fallback(json_data: str, chunk_size: int) -> List[Any]:
+    """Fallback method for processing large JSON without ijson."""
+    try:
+        # Try to parse the entire JSON first
+        data = await asyncio.to_thread(json.loads, json_data)
+        
+        # If it's a large list, we can process it in chunks
+        if isinstance(data, list) and len(data) > chunk_size:
+            logger.info(f"Processing large JSON list with {len(data)} items in chunks")
+            return data  # Return the full list, chunking will be handled in Excel processing
+        else:
+            return data if isinstance(data, list) else [data]
+            
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parsing failed in fallback: {e}")
+        # Try line-by-line parsing as a final attempt
+        lines = json_data.strip().split('\n')
+        objects = []
+        for line in lines:
+            line = line.strip()
+            if line:
+                try:
+                    obj = await asyncio.to_thread(json.loads, line)
+                    objects.append(obj)
+                except json.JSONDecodeError:
+                    continue
+        
+        if not objects:
+            raise ValueError("No valid JSON objects found in data")
+        
+        return objects
+
 def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_dir: str, job_id: Optional[str] = None, job_manager: Optional[Any] = None) -> Tuple[str, str, str]:
     """
-    Convert JSON data directly to Excel with automatic retry mechanism.
+    Convert JSON data directly to Excel with automatic retry mechanism and streaming for large files.
     Will retry up to 3 times with different approaches on each retry.
     Optionally updates job progress if job_id and job_manager are provided.
     """
@@ -313,9 +395,18 @@ def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_d
             data_objects = []
             clean_json_data = json_data.strip()
             
-            # Parsing attempts (simplified for brevity, original logic retained)
-            if retry_count == 0: # Standard parsing
-                while pos < len(clean_json_data): obj, end_pos = decoder.raw_decode(clean_json_data[pos:]); data_objects.append(obj); pos = end_pos; pos += len(clean_json_data[pos:]) - len(clean_json_data[pos:].lstrip())
+            # Enhanced parsing with streaming support for large JSON
+            if retry_count == 0: # Streaming/optimized parsing
+                try:
+                    data_objects = asyncio.run(process_large_json_streaming(clean_json_data, chunk_size))
+                except Exception as e:
+                    logger.warning(f"Streaming parsing failed: {e}, falling back to standard parsing")
+                    # Fallback to standard parsing
+                    while pos < len(clean_json_data): 
+                        obj, end_pos = decoder.raw_decode(clean_json_data[pos:])
+                        data_objects.append(obj)
+                        pos = end_pos
+                        pos += len(clean_json_data[pos:]) - len(clean_json_data[pos:].lstrip())
             elif retry_count == 1: # Line-by-line
                 for line in clean_json_data.split('\n'):
                     if line.strip():
@@ -659,10 +750,17 @@ def convert_with_agno(
                     agent_key = f"agent_{model}"
                     if agent_key in AGENT_POOL:
                         try:
-                            del AGENT_POOL[agent_key]
-                            logger.info(f"Removed potentially faulty agent {agent_key} from pool due to client-side error ({str(e)[:50]}...).")
-                        except KeyError:
-                            logger.warning(f"Agent key {agent_key} not found in pool for removal, though error suggested it might be faulty.")
+                            faulty_agent = AGENT_POOL.pop(agent_key, None)
+                            if faulty_agent:
+                                # Clean up agent resources
+                                try:
+                                    if hasattr(faulty_agent, 'storage') and faulty_agent.storage:
+                                        faulty_agent.storage.close()
+                                except Exception as cleanup_error:
+                                    logger.warning(f"Error cleaning up faulty agent storage: {cleanup_error}")
+                            logger.info(f"Removed and cleaned up potentially faulty agent {agent_key} from pool due to client-side error ({str(e)[:50]}...).")
+                        except Exception as removal_error:
+                            logger.warning(f"Error removing agent {agent_key} from pool: {removal_error}")
 
 
             if retry_count >= max_retries or not is_retryable:
@@ -674,10 +772,17 @@ def convert_with_agno(
                 agent_key = f"agent_{model}"
                 if agent_key in AGENT_POOL:
                     try:
-                        del AGENT_POOL[agent_key]
-                        logger.info(f"Removed agent {agent_key} from pool after final failure.")
-                    except KeyError:
-                         logger.warning(f"Agent key {agent_key} not found in pool for removal on final failure.")
+                        failed_agent = AGENT_POOL.pop(agent_key, None)
+                        if failed_agent:
+                            # Clean up agent resources
+                            try:
+                                if hasattr(failed_agent, 'storage') and failed_agent.storage:
+                                    failed_agent.storage.close()
+                            except Exception as cleanup_error:
+                                logger.warning(f"Error cleaning up failed agent storage: {cleanup_error}")
+                        logger.info(f"Removed and cleaned up agent {agent_key} from pool after final failure.")
+                    except Exception as removal_error:
+                        logger.warning(f"Error removing agent {agent_key} from pool on final failure: {removal_error}")
                 raise # Re-raise the last exception
             
             delay = min(retry_count * 2, 10) # Exponential backoff for retries
@@ -686,7 +791,7 @@ def convert_with_agno(
                  asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING, current_step=f"Retrying in {delay}s after error: {error_type}"))
             time.sleep(delay)
 
-def find_newest_file(directory: str, files_before: set, job_id: Optional[str] = None, job_manager: Optional[Any] = None) -> Optional[str]:
+async def find_newest_file_async(directory: str, files_before: set, job_id: Optional[str] = None, job_manager: Optional[Any] = None) -> Optional[str]:
     """
     Find the newest Excel file in directory with improved reliability.
     Optionally updates job progress if job_id and job_manager are provided.
@@ -716,15 +821,16 @@ def find_newest_file(directory: str, files_before: set, job_id: Optional[str] = 
             except Exception as e_update:
                 logger.error(f"Error updating job {job_id} status in find_newest_file: {e_update}")
 
-    asyncio.run(_update_job_if_present(current_step_val="Searching for output file", progress_val=0.85))
+    await _update_job_if_present(current_step_val="Searching for output file", progress_val=0.85)
 
     patterns = [os.path.join(directory, "*.xlsx"), os.path.join(directory, "**", "*.xlsx")]
 
-    # Adjusted retry parameters for ~30 second total wait time with 10 attempts
-    max_attempts = 10
-    current_delay = 0.25  # Initial delay in seconds
-    backoff_factor = 1.5
+    # Improved retry parameters with better timing and stability checks
+    max_attempts = 15
+    current_delay = 0.1  # Start with shorter delay
+    backoff_factor = 1.2  # More gradual backoff
     total_slept_time = 0
+    stable_file_checks = 2  # Number of consecutive checks for file stability
     
     files_after = set()
     new_files = set()
@@ -732,7 +838,9 @@ def find_newest_file(directory: str, files_before: set, job_id: Optional[str] = 
     for attempt in range(max_attempts):
         # Perform file search
         current_files_after_scan = set()
-        for pattern in patterns: current_files_after_scan.update(glob.glob(pattern, recursive=True))
+        for pattern in patterns: 
+            glob_results = await asyncio.to_thread(glob.glob, pattern, recursive=True)
+            current_files_after_scan.update(glob_results)
         files_after.update(current_files_after_scan) # Accumulate files found over attempts, in case of very slow writes
         
         new_files_on_this_attempt = files_after - files_before
@@ -742,20 +850,36 @@ def find_newest_file(directory: str, files_before: set, job_id: Optional[str] = 
             # Check readability and size immediately for candidates found on this attempt
             # This allows quicker exit if a valid file is found early.
             # Sort these candidates to check the newest one first.
-            def get_file_sort_key_attempt(f):
-                try: return (os.path.getmtime(f), os.path.getctime(f))
-                except OSError: return (0,0)
-
-            sorted_candidates = sorted(list(new_files_on_this_attempt), key=get_file_sort_key_attempt, reverse=True)
+            # Get sort keys for all candidates asynchronously
+            candidates_with_keys = []
+            for f in new_files_on_this_attempt:
+                try: 
+                    mtime = await asyncio.to_thread(os.path.getmtime, f)
+                    ctime = await asyncio.to_thread(os.path.getctime, f)
+                    candidates_with_keys.append((f, (mtime, ctime)))
+                except OSError: 
+                    candidates_with_keys.append((f, (0, 0)))
+            
+            # Sort by the keys (newest first)
+            candidates_with_keys.sort(key=lambda x: x[1], reverse=True)
+            sorted_candidates = [f for f, _ in candidates_with_keys]
 
             for candidate_file in sorted_candidates:
                 try:
-                    if os.path.exists(candidate_file) and \
-                       os.access(candidate_file, os.R_OK) and \
-                       os.path.getsize(candidate_file) > 0:
-                        logger.info(f"Valid file found: {candidate_file} (size: {os.path.getsize(candidate_file)}B) on attempt {attempt + 1}.")
-                        asyncio.run(_update_job_if_present(current_step_val="Output file found", progress_val=0.98))
-                        return candidate_file # Exit as soon as a valid file is found
+                    # Check if file exists and is stable (size doesn't change between checks)
+                    if await asyncio.to_thread(os.path.exists, candidate_file) and await asyncio.to_thread(os.access, candidate_file, os.R_OK):
+                        initial_size = await asyncio.to_thread(os.path.getsize, candidate_file)
+                        if initial_size > 0:
+                            # Wait briefly and check size again to ensure file write is complete
+                            await asyncio.sleep(0.1)
+                            final_size = await asyncio.to_thread(os.path.getsize, candidate_file)
+                            
+                            if initial_size == final_size:
+                                logger.info(f"Valid stable file found: {candidate_file} (size: {final_size}B) on attempt {attempt + 1}.")
+                                await _update_job_if_present(current_step_val="Output file found", progress_val=0.98)
+                                return candidate_file
+                            else:
+                                logger.debug(f"File {candidate_file} still being written (size changed from {initial_size} to {final_size})")
                 except OSError as e_check:
                     logger.warning(f"Error checking candidate file {candidate_file} on attempt {attempt+1}: {e_check}")
             # If no valid file found among this attempt's candidates, new_files remains the cumulative set for next logging/final check
@@ -767,10 +891,10 @@ def find_newest_file(directory: str, files_before: set, job_id: Optional[str] = 
             else: # Log that candidates were found but none were valid yet
                  logger.info(f"File detection attempt {attempt + 1}/{max_attempts}: Found candidates, but none valid yet. Sleeping for {current_delay:.2f}s.")
 
-            time.sleep(current_delay)
+            await asyncio.sleep(current_delay)
             total_slept_time += current_delay
             current_delay *= backoff_factor
-            asyncio.run(_update_job_if_present(progress_val=0.85 + (0.1 * (attempt + 1) / max_attempts)))
+            await _update_job_if_present(progress_val=0.85 + (0.1 * (attempt + 1) / max_attempts))
         elif new_files_on_this_attempt: # Last attempt, and some new files were seen in this last pass
              logger.info(f"File detection: Last attempt ({max_attempts}/{max_attempts}). Found candidates, but none were valid in the final check pass.")
         else: # Last attempt, no new files found in this pass
@@ -779,10 +903,17 @@ def find_newest_file(directory: str, files_before: set, job_id: Optional[str] = 
 
     if settings.AGNO_DEBUG:
         logger.info(f"FILE DEBUG (after all attempts): Total slept time: {total_slept_time:.2f}s")
-        logger.info(f"Dir={directory}, Exists={os.path.exists(directory)}, Patterns={patterns}")
+        dir_exists = await asyncio.to_thread(os.path.exists, directory)
+        logger.info(f"Dir={directory}, Exists={dir_exists}, Patterns={patterns}")
         logger.info(f"Files Before ({len(files_before)}): {list(files_before)}")
         logger.info(f"Files After (cumulative list of files found across attempts) ({len(files_after)}): {list(files_after)}")
-        all_files_in_dir = [os.path.join(r,f) for r,ds,fs in os.walk(directory) for f in fs] if os.path.exists(directory) else []
+        if dir_exists:
+            all_files_in_dir = []
+            for r, ds, fs in await asyncio.to_thread(os.walk, directory):
+                for f in fs:
+                    all_files_in_dir.append(os.path.join(r, f))
+        else:
+            all_files_in_dir = []
         logger.info(f"ALL files in dir tree ({len(all_files_in_dir)}): {all_files_in_dir}")
         # new_files here would be the candidates from the *last* attempt if we didn't find a valid one earlier
         # It's better to log the set of all new files ever considered:
@@ -795,7 +926,7 @@ def find_newest_file(directory: str, files_before: set, job_id: Optional[str] = 
     # It's more accurate to check `all_new_candidates_considered`.
     if not (files_after - files_before): # No new files ever appeared across all attempts
         logger.warning(f"No new Excel files appeared in {directory} after {max_attempts} attempts and ~{total_slept_time:.2f}s total sleep time.")
-        asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file not found", result_val={"error": "No output file generated by AI."}))
+        await _update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file not found", result_val={"error": "No output file generated by AI."})
         return None
     
     # If we reach here, it means new files might have appeared at some point, but none passed all validation checks
@@ -806,51 +937,80 @@ def find_newest_file(directory: str, files_before: set, job_id: Optional[str] = 
     
     if not final_new_candidates: # Should have been caught by the above, but as a safeguard.
         logger.warning(f"No new files identified for final validation despite earlier indications.")
-        asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file disappeared or error in logic", result_val={"error": "Output file candidates lost."}))
+        await _update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file disappeared or error in logic", result_val={"error": "Output file candidates lost."})
         return None
 
-    def get_file_sort_key_final(f):
-        try: return (os.path.getmtime(f), os.path.getctime(f))
-        except OSError: return (0,0)
-
-    sorted_final_candidates = sorted(list(final_new_candidates), key=get_file_sort_key_final, reverse=True)
+    # Get sort keys for final candidates asynchronously
+    final_candidates_with_keys = []
+    for f in final_new_candidates:
+        try: 
+            mtime = await asyncio.to_thread(os.path.getmtime, f)
+            ctime = await asyncio.to_thread(os.path.getctime, f)
+            final_candidates_with_keys.append((f, (mtime, ctime)))
+        except OSError: 
+            final_candidates_with_keys.append((f, (0, 0)))
+    
+    # Sort by the keys (newest first)
+    final_candidates_with_keys.sort(key=lambda x: x[1], reverse=True)
+    sorted_final_candidates = [f for f, _ in final_candidates_with_keys]
 
     for potential_file in sorted_final_candidates:
         try:
-            if os.path.exists(potential_file) and \
-               os.access(potential_file, os.R_OK) and \
-               os.path.getsize(potential_file) > 0:
-                logger.info(f"Final validation successful: {potential_file} (size: {os.path.getsize(potential_file)}B)")
-                asyncio.run(_update_job_if_present(current_step_val="Output file found (final check)", progress_val=0.98))
-                return potential_file
+            if await asyncio.to_thread(os.path.exists, potential_file) and await asyncio.to_thread(os.access, potential_file, os.R_OK):
+                initial_size = await asyncio.to_thread(os.path.getsize, potential_file)
+                if initial_size > 0:
+                    # Final stability check
+                    await asyncio.sleep(0.1)
+                    final_size = await asyncio.to_thread(os.path.getsize, potential_file)
+                    
+                    if initial_size == final_size:
+                        logger.info(f"Final validation successful: {potential_file} (size: {final_size}B)")
+                        await _update_job_if_present(current_step_val="Output file found (final check)", progress_val=0.98)
+                        return potential_file
+                    else:
+                        logger.warning(f"Final validation: File {potential_file} still changing size ({initial_size} -> {final_size})")
+                else:
+                    logger.warning(f"Final validation: File {potential_file} has zero size")
             else:
-                logger.warning(f"Final validation: Candidate {potential_file} not valid (exists: {os.path.exists(potential_file)}, readable: {os.access(potential_file, os.R_OK)}, size: {os.path.getsize(potential_file) if os.path.exists(potential_file) else 'N/A'}).")
+                file_exists = await asyncio.to_thread(os.path.exists, potential_file)
+                file_readable = await asyncio.to_thread(os.access, potential_file, os.R_OK)
+                logger.warning(f"Final validation: Candidate {potential_file} not valid (exists: {file_exists}, readable: {file_readable}).")
         except OSError as e_final_check:
             logger.warning(f"Error during final validation of {potential_file}: {e_final_check}")
 
     logger.warning(f"All {len(final_new_candidates)} accumulated new file(s) failed final validation or were inaccessible.")
-    asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file(s) found but invalid/inaccessible", result_val={"error": "Generated file(s) were invalid or inaccessible."}))
-        return None
+    await _update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file(s) found but invalid/inaccessible", result_val={"error": "Generated file(s) were invalid or inaccessible."})
+    return None
 
-    except Exception as e:
-        logger.error(f"Error selecting/accessing newest file: {e}")
-        asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Error accessing output file", result_val={"error": str(e)}))
-        return None
+def find_newest_file(directory: str, files_before: set, job_id: Optional[str] = None, job_manager: Optional[Any] = None) -> Optional[str]:
+    """Synchronous wrapper for find_newest_file_async."""
+    return asyncio.run(find_newest_file_async(directory, files_before, job_id, job_manager))
 
 # Cleanup function to manage the agent pool and storage
 def cleanup_agent_pool():
-    """Remove agents from the pool to free up memory."""
+    """Remove agents from the pool to free up memory with proper resource cleanup."""
     global AGENT_POOL
     # Add lock if AGENT_POOL operations become complex or concurrent access is an issue
     logger.info(f"Cleaning up agent pool with {len(AGENT_POOL)} agents")
+    
+    # Clean up each agent's resources before clearing the pool
+    for agent_key, agent in list(AGENT_POOL.items()):
+        try:
+            if hasattr(agent, 'storage') and agent.storage:
+                agent.storage.close()
+        except Exception as cleanup_error:
+            logger.warning(f"Error cleaning up agent {agent_key} storage during pool cleanup: {cleanup_error}")
+    
     AGENT_POOL.clear()
+    logger.info("Agent pool cleanup completed")
 
-def cleanup_storage_files(max_age_hours: int = 1):
-    """Clean up old storage files (e.g., .db files for Agno) to prevent disk space issues."""
-    import glob
+async def cleanup_storage_files_async(max_age_hours: int = None):
+    """Async version: Clean up old storage files (e.g., .db files for Agno) to prevent disk space issues."""
     import time
+    if max_age_hours is None:
+        max_age_hours = settings.STORAGE_CLEANUP_HOURS
     storage_dir = Path(getattr(settings, 'AGNO_STORAGE_DIR', 'storage')) # Use configurable path
-    storage_dir.mkdir(exist_ok=True) # Ensure it exists
+    await asyncio.to_thread(storage_dir.mkdir, exist_ok=True) # Ensure it exists
 
     cutoff_time = time.time() - (max_age_hours * 3600)
     # Example pattern, adjust if Agno uses a different naming scheme or location
@@ -859,11 +1019,15 @@ def cleanup_storage_files(max_age_hours: int = 1):
     cleaned_count = 0
     failed_count = 0
 
-    for db_file_path_str in glob.glob(file_pattern):
+    # glob.glob is blocking, so run in thread
+    matching_files = await asyncio.to_thread(glob.glob, file_pattern)
+    
+    for db_file_path_str in matching_files:
         db_file_path = Path(db_file_path_str)
         try:
-            if db_file_path.stat().st_mtime < cutoff_time:
-                db_file_path.unlink() # Remove file
+            file_stat = await asyncio.to_thread(db_file_path.stat)
+            if file_stat.st_mtime < cutoff_time:
+                await asyncio.to_thread(db_file_path.unlink) # Remove file
                 logger.debug(f"Cleaned up old storage file: {db_file_path}")
                 cleaned_count +=1
         except OSError as e:
@@ -872,6 +1036,10 @@ def cleanup_storage_files(max_age_hours: int = 1):
 
     if cleaned_count > 0 or failed_count > 0:
         logger.info(f"Storage cleanup: {cleaned_count} files removed, {failed_count} failures for pattern '{file_pattern}'.")
+
+def cleanup_storage_files(max_age_hours: int = None):
+    """Synchronous version: Clean up old storage files (e.g., .db files for Agno) to prevent disk space issues."""
+    asyncio.run(cleanup_storage_files_async(max_age_hours))
 
 def json_serialize_job_result(result: Any) -> Any:
     """Helper to ensure job results are JSON serializable for SSE/WebSocket."""

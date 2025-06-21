@@ -1,8 +1,9 @@
 # app/core/config.py
 import os
 import logging
+from typing import Optional
 from pydantic_settings import BaseSettings
-from pydantic import validator
+from pydantic import field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,8 @@ class Settings(BaseSettings):
     MAX_JSON_SIZE_MB: int = 50   # Maximum JSON payload size in MB
     REQUEST_TIMEOUT_SECONDS: int = 2700  # 45 minutes (increased from 20 min)
     CLEANUP_DELAY_SECONDS: int = 300  # 5 minutes delay before cleanup
-    MAX_POOL_SIZE: int = 10  # Maximum number of agents in pool
+    MAX_POOL_SIZE: int = int(os.getenv("MAX_POOL_SIZE", "10"))  # Maximum number of agents in pool
+    STORAGE_CLEANUP_HOURS: int = int(os.getenv("STORAGE_CLEANUP_HOURS", "1"))  # Agent storage cleanup interval
 
     # Per-job type timeout configuration (example)
     # This could be a simple dict or parsed from a JSON string in env
@@ -65,9 +67,10 @@ class Settings(BaseSettings):
     # API Key Validation Setting
     SKIP_API_KEY_VALIDATION_ON_STARTUP: bool = os.getenv("SKIP_API_KEY_VALIDATION_ON_STARTUP", "false").lower() == "true"
     
-    @validator('GOOGLE_API_KEY', pre=True, always=True)
-    def validate_google_api_key(cls, v, values):
-        skip_validation = values.get('SKIP_API_KEY_VALIDATION_ON_STARTUP', False)
+    @field_validator('GOOGLE_API_KEY', mode='before')
+    @classmethod
+    def validate_google_api_key(cls, v, info):
+        skip_validation = info.data.get('SKIP_API_KEY_VALIDATION_ON_STARTUP', False) if info.data else False
         if not v or v.isspace():
             if not skip_validation:
                 raise ValueError("GOOGLE_API_KEY must be set and not be empty or whitespace.")
@@ -80,9 +83,10 @@ class Settings(BaseSettings):
                 logger.warning("GOOGLE_API_KEY appears to be invalid (too short).")
         return v
     
-    @validator('AGNO_API_KEY')
-    def validate_agno_api_key(cls, v, values):
-        if values.get('AGNO_MONITOR') and not v:
+    @field_validator('AGNO_API_KEY', mode='after')
+    @classmethod
+    def validate_agno_api_key(cls, v, info):
+        if info.data and info.data.get('AGNO_MONITOR') and not v:
             logger.warning("AGNO_MONITOR is enabled but AGNO_API_KEY is not set. Monitoring may not work properly.")
         return v
 
