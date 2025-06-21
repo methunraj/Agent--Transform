@@ -93,16 +93,32 @@ async def lifespan(app: FastAPI):
     # Start JobManager workers
     # The number of workers should be configurable, e.g., from settings
     num_workers = getattr(settings, 'JOB_WORKERS', 2) # Default to 2 if not in settings
-    job_manager.start_workers(num_workers)
-    logger.info(f"Application startup complete. Temp directory: {app_state['TEMP_DIR']}. Job workers started: {num_workers}")
+
+    try:
+        await job_manager.connect_redis() # Connect JobManager to Redis
+        if job_manager.redis_client: # Start workers only if Redis connection was successful
+            job_manager.start_workers(num_workers)
+            logger.info(f"Application startup complete. Temp directory: {app_state['TEMP_DIR']}. Job workers started: {num_workers}. Connected to Redis.")
+        else:
+            logger.error("Application startup: JobManager failed to connect to Redis. Workers not started.")
+            # Depending on policy, might want to prevent app startup or run in a degraded mode.
+            # For now, it will run without workers if Redis fails.
+            logger.info(f"Application startup complete but JobManager NOT connected to Redis. Temp directory: {app_state['TEMP_DIR']}.")
+
+    except Exception as e:
+        logger.error(f"Error during JobManager Redis connection or worker startup: {e}", exc_info=True)
+        # Application will continue to start, but job processing will likely fail or not occur.
+        logger.info(f"Application startup complete with errors in JobManager setup. Temp directory: {app_state['TEMP_DIR']}.")
+
     
     yield  # Application is now running
     
     # Shutdown
     logger.info("Application shutdown. Cleaning up resources...")
     job_manager = app_state["JOB_MANAGER"]
-    await job_manager.stop_workers()
+    await job_manager.stop_workers() # Stops worker tasks
     logger.info("Job workers stopped.")
+    await job_manager.close_redis() # Close Redis connection pool
 
     services.cleanup_agent_pool() # Assuming this is thread-safe or adapted for async
 
@@ -191,21 +207,21 @@ async def process_json_data_deprecated(request_data: schemas.ProcessRequest, bac
     This endpoint now creates a job and waits for its completion for compatibility.
     """
     logger.warning("Deprecated /process endpoint used. Consider migrating to /process-async.")
-    
+
     job_manager: JobManager = app_state["JOB_MANAGER"]
     job_id = await job_manager.create_job(name=f"legacy_process_{request_data.file_name or 'untitled'}")
-    
+
     # Store request data or pass it to the job processing logic if needed by services.py
     # For now, assuming services.py can be adapted or JobManager handles it.
     # This might involve adding a payload to the Job model or a separate store.
-    
+
     # Simulate putting the actual processing task into the job's execution path
     # This requires adapting services.convert_with_agno_async and direct_json_to_excel_async
     # to be callable by the JobManager's workers, receive job_id, and update job status.
-    
+
     # For now, we'll just return a placeholder or error, as the full refactor of services.py
     # is part of a later step. This endpoint is mainly for API compatibility.
-    
+
     # Wait for job completion (simplified polling for this deprecated endpoint)
     timeout_seconds = settings.REQUEST_TIMEOUT_SECONDS # Use existing timeout
     start_time = time.monotonic()

@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     # SSE/WebSocket Configuration
     SSE_TIMEOUT_SECONDS: int = 30 # How long SSE connection waits for message before sending keepalive
     WEBSOCKET_KEEP_ALIVE_TIMEOUT_SECONDS: int = 60 # Timeout for WebSocket receive to check connection
+
+    # Redis Configuration for Job Management
+    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+    REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
+    REDIS_PASSWORD: Optional[str] = os.getenv("REDIS_PASSWORD", None)
+    REDIS_JOB_QUEUE_KEY: str = "intelliextract_job_queue"
+    REDIS_JOB_KEY_PREFIX: str = "intelliextract_job:"
+    REDIS_JOB_TTL_SECONDS: int = 24 * 3600  # 24 hours
     
     @validator('GOOGLE_API_KEY')
     def validate_google_api_key(cls, v):

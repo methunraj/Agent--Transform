@@ -33,51 +33,60 @@ if settings.AGNO_MONITOR:
 if settings.AGNO_DEBUG:
     os.environ["AGNO_DEBUG"] = "true"
 
-# Agent pool for reusing initialized agents (lightweight in Agno ~3.75 KiB per agent)
-AGENT_POOL: Dict[str, Agent] = {}
-MAX_POOL_SIZE = settings.MAX_POOL_SIZE  # Reasonable limit for different model types
+from cachetools import LRUCache
 
+# Agent pool using LRUCache
+# Initialize AGENT_POOL as an LRUCache instance.
+# The settings.MAX_POOL_SIZE will be used from the config.
+AGENT_POOL: LRUCache[str, Agent] = LRUCache(maxsize=settings.MAX_POOL_SIZE if settings.MAX_POOL_SIZE > 0 else 10)
 
 def create_agno_agent(model: str, temp_dir: str) -> Agent:
-    """Creates and configures the Agno agent with efficient pooling strategy.
-    
-    Agno agents are extremely lightweight (~3.75 KiB) and fast to instantiate (~2μs).
-    Using model-based pooling for maximum reuse while maintaining thread safety.
     """
-    # Clean up old storage files to prevent accumulation
-    cleanup_storage_files()
+    Creates and configures the Agno agent using an LRU cache for pooling.
+    Ensures critical state (base_dir, storage) is reset for every use.
+    """
+    cleanup_storage_files() # Clean up old SQLite files
     
-    # Create agent key based on model only for cross-request reuse
     agent_key = f"agent_{model}"
     
-    # Check if agent exists in pool for reuse across requests
-    if agent_key in AGENT_POOL:
-        agent = AGENT_POOL[agent_key]
-        logger.info(f"Reusing cached agent for model: {model} (pool size: {len(AGENT_POOL)})")
-        
-        # Update agent's working directory for this request
+    # Attempt to retrieve agent from LRU cache
+    # A lock might be considered if AGENT_POOL access becomes a bottleneck,
+    # but cachetools itself is generally thread-safe for basic operations.
+    # However, the agent object modification after retrieval should be handled carefully if accessed concurrently.
+    # Given FastAPI's threading model for sync endpoints, this should be okay.
+    agent: Optional[Agent] = AGENT_POOL.get(agent_key)
+
+    if agent:
+        logger.info(f"Reusing agent for model '{model}' from LRU cache. Cache size: {len(AGENT_POOL)}/{AGENT_POOL.maxsize}")
+        # CRITICAL: Re-configure state for the retrieved agent
+        # 1. Update tool base_dir
         for tool in agent.tools:
             if hasattr(tool, 'base_dir'):
                 tool.base_dir = Path(temp_dir).absolute()
-                logger.debug(f"Updated tool base_dir to: {temp_dir}")
-        
-        # CRITICAL: Assign fresh storage to prevent message history contamination
-        # This prevents the 400 "contents.parts must not be empty" error
-        import uuid
-        storage_dir = Path("storage")
+        logger.debug(f"Updated tool base_dir for cached agent '{model}' to: {temp_dir}")
+
+        # 2. Assign fresh SqliteStorage
+        storage_dir = Path(getattr(settings, 'AGNO_STORAGE_DIR', 'storage'))
         storage_dir.mkdir(exist_ok=True)
         unique_db_id = uuid.uuid4().hex[:8]
+        db_path = storage_dir / f"agents_{model.replace('-', '_')}_{unique_db_id}.db"
         agent.storage = SqliteStorage(
-            table_name="financial_agent_sessions",
-            db_file=str(storage_dir / f"agents_{unique_db_id}.db"),
+            table_name="financial_agent_sessions", # Consider making table_name dynamic if needed
+            db_file=str(db_path),
             auto_upgrade_schema=True
         )
-        logger.info(f"Assigned fresh storage to cached agent: agents_{unique_db_id}.db")
+        logger.info(f"Assigned fresh storage to cached agent '{model}': {db_path.name}")
         
+        # Explicitly put it back if you want to update its "recently used" status,
+        # though get() itself might do this depending on cachetools version/config.
+        # For LRUCache, get() typically marks item as recently used.
+        # AGENT_POOL[agent_key] = agent
         return agent
     
+    # Agent not in cache or evicted, create a new one
+    logger.info(f"Creating new agent for model '{model}'. Cache size: {len(AGENT_POOL)}/{AGENT_POOL.maxsize}")
     if not settings.GOOGLE_API_KEY:
-        raise ValueError("GOOGLE_API_KEY is not set in the environment.")
+        raise ValueError("GOOGLE_API_KEY is not set in the environment for new agent creation.")
 
     # --- SIMPLIFIED AND FOCUSED INSTRUCTIONS (approx. 50 lines) ---
     instructions = [
@@ -223,24 +232,10 @@ def create_agno_agent(model: str, temp_dir: str) -> Agent:
     
     logger.info(f"Created new Agno agent with model: {model}, monitoring={monitoring_enabled}, debug={debug_enabled}")
     
-    # Store agent in pool for cross-request reuse with size management
-    if len(AGENT_POOL) >= MAX_POOL_SIZE:
-        # Remove oldest agent (simple FIFO strategy)
-        # This should be thread-safe if AGENT_POOL is accessed by multiple threads from to_thread
-        # Consider using a lock for AGENT_POOL modifications if concurrency issues arise.
-        # For now, assuming GIL provides sufficient protection for this simple dict operation.
-        try:
-            oldest_key = next(iter(AGENT_POOL)) # This could be problematic if dict is modified during iteration
-            del AGENT_POOL[oldest_key]
-            logger.info(f"Removed oldest agent from pool: {oldest_key}")
-        except StopIteration: # AGENT_POOL was empty
-            pass
-        except RuntimeError: # Dictionary changed size during iteration
-            logger.warning("Agent pool changed size during cleanup, skipping removal this time.")
-            pass
-
+    # Store the newly created agent in the LRU cache.
+    # The LRUCache will automatically handle eviction if maxsize is reached.
     AGENT_POOL[agent_key] = agent
-    logger.info(f"Agent pool updated (size: {len(AGENT_POOL)})")
+    logger.info(f"Stored new agent for model '{model}' in LRU cache. Cache size: {len(AGENT_POOL)}/{AGENT_POOL.maxsize}")
     return agent
 
 async def direct_json_to_excel_async(json_data: str, file_name: str, chunk_size: int, temp_dir: str) -> Tuple[str, str, str]:
@@ -304,7 +299,7 @@ def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_d
                         for match in matches:
                             try: data_objects.append(json.loads(match))
                             except: continue
-            
+
             if not data_objects: raise ValueError("No valid JSON objects found")
 
             asyncio.run(_update_job_if_present(progress_val=0.15, current_step_val="JSON parsing complete"))

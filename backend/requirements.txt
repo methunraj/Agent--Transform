@@ -21,9 +21,11 @@ agno>=0.22.0
 # HTTP and Async
 aiofiles>=23.0.0
 httpx>=0.25.0
+aioredis>=2.0.1 # For Redis integration with JobManager
 
 # Utilities
 pycountry>=22.0.0
+cachetools>=5.0.0 # For LRU cache for Agent Pool
 
 # Search Tools (used by Agno GoogleSearchTools)
 googlesearch-python>=1.2.0
