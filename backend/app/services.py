@@ -559,55 +559,128 @@ def convert_with_agno(
             if job_manager and job_id:
                 asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING, progress=0.2, current_step=f"Sending prompt to AI (attempt {retry_count + 1})"))
 
-            response = agent.run(
-                prompt, stream=False, show_tool_calls=True, markdown=True,
-                user_id=current_user_id, session_id=current_session_id
-            )
-            
-            if not hasattr(response, 'content') or not response.content:
-                logger.warning(f"Agent returned empty response. Content: '{getattr(response, 'content', None)}'")
-                raise ValueError("Agent returned empty response content")
+            response = None
+            response_content_for_return = None
+            try:
+                response = agent.run(
+                    prompt, stream=False, show_tool_calls=True, markdown=True,
+                    user_id=current_user_id, session_id=current_session_id
+                )
+
+                if not hasattr(response, 'content') or not response.content:
+                    logger.warning(f"Agent returned empty response object or empty content. Response: {response}")
+                    raise ValueError("Agent returned empty response content")
+
+                response_content_for_return = response.content
+
+                # Attempt to parse content if it's expected to be JSON for tool calls,
+                # this is a placeholder for where such logic would go if Agno doesn't auto-parse tool calls.
+                # For now, we assume response.content is the final textual output.
+                # If response.content itself is sometimes structured (e.g. JSON) and sometimes not,
+                # more sophisticated parsing based on context would be needed here.
+
+            except json.JSONDecodeError as je:
+                logger.error(f"JSONDecodeError during agent.run or processing its content: {je}", exc_info=True)
+                raw_content = getattr(response, 'content', None)
+                logger.error(f"Raw response content that caused JSONDecodeError: {raw_content}")
+                # Attempt to extract JSON from potentially mixed content
+                if raw_content and isinstance(raw_content, str):
+                    try:
+                        logger.info("Attempting to extract JSON from mixed content...")
+                        # Basic extraction: find first '{' and last '}'
+                        start_brace = raw_content.find('{')
+                        end_brace = raw_content.rfind('}')
+                        if start_brace != -1 and end_brace != -1 and end_brace > start_brace:
+                            json_str_candidate = raw_content[start_brace : end_brace + 1]
+                            json.loads(json_str_candidate) # Validate
+                            logger.info(f"Successfully extracted and validated JSON: {json_str_candidate[:200]}...")
+                            response_content_for_return = json_str_candidate # Use extracted JSON
+                        else:
+                            logger.warning("Could not find valid JSON block in raw content.")
+                            raise # Re-raise original JSONDecodeError if extraction fails
+                    except json.JSONDecodeError as inner_je:
+                        logger.error(f"Failed to extract/parse JSON from mixed content: {inner_je}", exc_info=True)
+                        raise je # Re-raise outer JSONDecodeError
+                else:
+                    raise # Re-raise if no raw content to parse
+            except Exception as agent_run_error:
+                # This will catch other errors from agent.run(), including potential HTTP 500s if Agno surfaces them as exceptions
+                logger.error(f"Exception during agent.run(): {agent_run_error}", exc_info=True)
+                # Log response object if available
+                if response:
+                    logger.error(f"Full response object during agent.run() exception: {vars(response) if hasattr(response, '__dict__') else response}")
+                else:
+                    logger.error("Response object was None at the time of agent.run() exception.")
+                raise # Re-raise the caught exception to be handled by the outer loop
 
             if job_manager and job_id:
                  progress_after_run = 0.8 # Assuming most work is done if run succeeds
                  asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING, progress=progress_after_run, current_step="AI processing complete, finalizing"))
             
             logger.info(f"Agno agent completed processing successfully.")
-            if debug_enabled:
-                reason_steps = len(response.reasoning) if hasattr(response, 'reasoning') else 0
-                tool_calls_count = len(response.tool_calls) if hasattr(response, 'tool_calls') else 0
-                logger.info(f"AI RESPONSE: Reasoning Steps={reason_steps}, Tool Calls={tool_calls_count}, Response Length={len(response.content)}")
+            if debug_enabled and response: # Ensure response object exists
+                reason_steps = len(response.reasoning) if hasattr(response, 'reasoning') and response.reasoning else 0
+                tool_calls_count = len(response.tool_calls) if hasattr(response, 'tool_calls') and response.tool_calls else 0
+                logger.info(f"AI RESPONSE: Reasoning Steps={reason_steps}, Tool Calls={tool_calls_count}, Response Length={len(response_content_for_return) if response_content_for_return else 0}")
             
-            return response.content, current_session_id
+            return response_content_for_return, current_session_id
             
-        except Exception as e:
+        except Exception as e: # Outer exception handling for retries
             retry_count += 1
             last_error = str(e)
-            error_details = traceback.format_exc()
+            error_details = traceback.format_exc() # Contains full stack trace
             error_type = type(e).__name__
             
-            logger.error(f"Agno AI processing failed (attempt {retry_count}/{max_retries}): {error_type}: {e}\n{error_details}")
+            # Enhanced logging for the exception that triggers a retry
+            logger.error(
+                f"Agno AI processing failed (attempt {retry_count}/{max_retries}): {error_type}: {e}\n"
+                f"Full Traceback for attempt {retry_count}:\n{error_details}"
+            )
+            # Also log the raw response content if the exception happened after agent.run() and we have it
+            # This is somewhat redundant if the inner try-except for agent.run() already logged it,
+            # but useful if the error occurs after that block but before successful return.
+            current_response_content = getattr(response, 'content', None) if 'response' in locals() and response else "Response object not available or content missing at this stage"
+            if not isinstance(current_response_content, str): # Ensure it's loggable
+                 current_response_content = str(current_response_content)
+            logger.error(f"Response content at time of error (attempt {retry_count}): {current_response_content[:1000]}...") # Log a snippet
+
 
             if job_manager and job_id:
-                # Update progress with error for this attempt
                 asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING,
                                                           current_step=f"Attempt {retry_count} failed: {error_type}",
-                                                          result={"error_attempt_{retry_count}": str(e)}))
+                                                          result={"error_attempt_{retry_count}": str(e), "details": error_details[:500]})) # Store snippet of details
             
             is_retryable = not ("authentication" in str(e).lower() or "unauthorized" in str(e).lower())
-            if "400" in str(e) or "Bad Request" in str(e): # Potentially remove agent from pool
-                agent_key = f"agent_{model}"
-                if agent_key in AGENT_POOL: del AGENT_POOL[agent_key]; logger.info(f"Removed faulty agent {agent_key} from pool.")
-            
+            # More specific check for typical Gemini API errors that might be wrapped by Agno
+            # Example: Check if the string representation of the error contains common HTTP error codes from API calls
+            if any(err_code in str(e) for err_code in ["400", "401", "403", "429", "500", "503"]) or "Bad Request" in str(e):
+                 # For 400 or other client errors, consider removing agent from pool
+                if any(client_err_code in str(e) for client_err_code in ["400", "401", "403"]):
+                    agent_key = f"agent_{model}"
+                    if agent_key in AGENT_POOL:
+                        try:
+                            del AGENT_POOL[agent_key]
+                            logger.info(f"Removed potentially faulty agent {agent_key} from pool due to client-side error ({str(e)[:50]}...).")
+                        except KeyError:
+                            logger.warning(f"Agent key {agent_key} not found in pool for removal, though error suggested it might be faulty.")
+
+
             if retry_count >= max_retries or not is_retryable:
                 logger.error(f"Final attempt failed or error not retryable. Error: {last_error}")
                 if job_manager and job_id:
-                    asyncio.run(job_manager.update_job_status(job_id, JobStatus.FAILED, current_step=f"Fatal error after {retry_count} attempts", result={"error": last_error, "details": error_details}))
-                agent_key = f"agent_{model}";
-                if agent_key in AGENT_POOL: del AGENT_POOL[agent_key]; logger.info(f"Removed agent {agent_key} from pool after final failure.")
+                    asyncio.run(job_manager.update_job_status(job_id, JobStatus.FAILED, current_step=f"Fatal error after {retry_count} attempts", result={"error": last_error, "details": error_details[:1000]})) # Store more details for final error
+
+                # Final attempt to remove agent from pool if it was a model-related error
+                agent_key = f"agent_{model}"
+                if agent_key in AGENT_POOL:
+                    try:
+                        del AGENT_POOL[agent_key]
+                        logger.info(f"Removed agent {agent_key} from pool after final failure.")
+                    except KeyError:
+                         logger.warning(f"Agent key {agent_key} not found in pool for removal on final failure.")
                 raise # Re-raise the last exception
             
-            delay = min(retry_count * 2, 10)
+            delay = min(retry_count * 2, 10) # Exponential backoff for retries
             logger.info(f"Retrying Agno conversion in {delay}s (attempt {retry_count+1}/{max_retries})...")
             if job_manager and job_id: # Update before sleep
                  asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING, current_step=f"Retrying in {delay}s after error: {error_type}"))
