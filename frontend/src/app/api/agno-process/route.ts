@@ -31,24 +31,37 @@ export async function POST(req: NextRequest) {
     console.log(`Attempting to connect to Python backend at: ${pythonBackendUrl}`);
     
     try {
-      console.log('Starting Agno processing request with 20 minute timeout...');
+      const requestTimeoutMs = 2700 * 1000; // 45 minutes in milliseconds
+      console.log(`Starting Agno processing request with ${requestTimeoutMs / 60000} minute timeout...`);
       
       // Use undici with proper timeout controls
-      const response = await request(`${pythonBackendUrl}/process`, {
+      // Note: The /process endpoint in the backend is deprecated and has its own timeout handling.
+      // This proxy should ideally call the new /process-async endpoint and then
+      // the client would poll /job/{job_id}/status.
+      // However, the current frontend JobContext calls this /api/agno-process expecting a direct response.
+      // For now, we'll update the timeout, but this flow might need a larger refactor
+      // if the backend /process truly becomes slow or is removed.
+      // The backend's /process endpoint (deprecated) internally creates a job and polls.
+      // So, this timeout here is for the entire duration of that polling by the backend's /process.
+      const response = await request(`${pythonBackendUrl}/process`, { // This still calls the deprecated backend endpoint
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          json_data: extractedData,  // Changed from extracted_data to match Python API
+          json_data: extractedData,
           file_name: fileName,
           description: `Extracted from ${fileName} using ${llmProvider}/${model}`,
-          api_key: finalApiKey,  // Use the resolved API key
-          model: model  // Python backend will use this model for Agno processing
+          // api_key: finalApiKey, // The /process endpoint in backend doesn't expect api_key directly in body
+                                 // It relies on GOOGLE_API_KEY env var.
+          model: model,
+          // Ensure other ProcessRequest fields are passed if needed by the backend /process
+           processing_mode: "auto", // Example: or get from client request if available
+           user_id: `user_${Math.random().toString(36).substr(2, 9)}`, // Example user_id
+           session_id: `session_${Math.random().toString(36).substr(2, 9)}` // Example session_id
         }),
-        // Set proper timeouts for long-running operations
-        headersTimeout: 20 * 60 * 1000, // 20 minutes for headers
-        bodyTimeout: 20 * 60 * 1000,    // 20 minutes for body
+        headersTimeout: requestTimeoutMs,
+        bodyTimeout: requestTimeoutMs,
       });
 
       if (response.statusCode !== 200) {
