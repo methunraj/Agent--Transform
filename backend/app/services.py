@@ -697,3 +697,125 @@ def json_serialize_job_result(result: Any) -> Any:
             return f"Non-serializable data of type {type(result).__name__}"
     return str(result) # Fallback for other types
 
+
+# --- Model Listing Logic ---
+# In-memory cache for models: (timestamp, model_list)
+_model_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
+_MODEL_CACHE_TTL_SECONDS = 5 * 60  # 5 minutes
+
+# Fallback model list
+_FALLBACK_MODELS = [
+    {
+        "id": "gemini-1.5-flash-latest",
+        "name": "Gemini 1.5 Flash (Fallback)",
+        "description": "Fast and versatile multimodal model for a variety of tasks. (Fallback data)",
+        "version": "1.5-flash",
+        "provider": "Google",
+        "input_token_limit": 1048576, # Based on public info for 1.5 Flash
+        "output_token_limit": 8192,    # Based on public info for 1.5 Flash
+        "pricing_details_url": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
+        "notes": "This is a fallback entry. Live data may vary."
+    },
+    {
+        "id": "gemini-1.0-pro-latest",
+        "name": "Gemini 1.0 Pro (Fallback)",
+        "description": "Mid-size multimodal model for a wide range of tasks. (Fallback data)",
+        "version": "1.0-pro",
+        "provider": "Google",
+        "input_token_limit": 30720, # Based on public info for 1.0 Pro (text)
+        "output_token_limit": 2048,   # Based on public info for 1.0 Pro (text)
+        "pricing_details_url": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
+        "notes": "This is a fallback entry. Live data may vary."
+    },
+]
+
+# Known token limits for some models (approximations, as API doesn't provide this directly)
+# See: https://ai.google.dev/models/gemini (Rates and quotas section often has context window info)
+# And: https://cloud.google.com/vertex-ai/docs/generative-ai/learn/models
+MODEL_TOKEN_LIMITS = {
+    "gemini-1.0-pro": {"input": 30720, "output": 2048}, # For gemini-1.0-pro-001, text only
+    "gemini-1.0-pro-latest": {"input": 30720, "output": 2048},
+    "gemini-1.0-pro-001": {"input": 30720, "output": 2048},
+    "gemini-pro": {"input": 30720, "output": 2048}, # Alias, often refers to 1.0 Pro
+
+    "gemini-1.5-flash-latest": {"input": 1048576, "output": 8192}, # Context window 1M, output 8K
+    "gemini-1.5-pro-latest": {"input": 1048576, "output": 8192},   # Context window 1M, output 8K
+
+    # Vision models have different limits, typically lower for text part
+    "gemini-1.0-pro-vision-latest": {"input": 12288, "output": 4096}, # Text part for vision model
+    "gemini-pro-vision": {"input": 12288, "output": 4096}, # Alias
+}
+
+
+async def list_available_models() -> List[Dict[str, Any]]:
+    """
+    Lists available generative models from Google Generative AI.
+    Uses caching and falls back to a hardcoded list on failure.
+    """
+    global _model_cache
+    current_time = time.time()
+
+    if _model_cache and (current_time - _model_cache[0]) < _MODEL_CACHE_TTL_SECONDS:
+        logger.info("Returning cached model list.")
+        return _model_cache[1]
+
+    try:
+        logger.info("Fetching model list from Google Generative AI API...")
+        import google.generativeai as genai
+        # Ensure API key is configured for the genai module if not done globally
+        if not genai.conf.api_key and settings.GOOGLE_API_KEY:
+             genai.configure(api_key=settings.GOOGLE_API_KEY)
+        elif not genai.conf.api_key and not settings.GOOGLE_API_KEY:
+            logger.error("Google API Key not configured for genai. Falling back to hardcoded models.")
+            _model_cache = (current_time, _FALLBACK_MODELS)
+            return _FALLBACK_MODELS
+
+        processed_models = []
+        # The genai.list_models() is synchronous, so run in thread pool
+        raw_models_iterator = await asyncio.to_thread(genai.list_models)
+
+        for model_obj in raw_models_iterator:
+            # We are interested in models that support 'generateContent' for chat/text generation
+            # and are not embedding models.
+            if 'generateContent' in model_obj.supported_generation_methods and \
+               not model_obj.name.startswith('models/embedding') and \
+               not model_obj.name.startswith('models/aqa'): # Attributed Question Answering models
+
+                model_id = model_obj.name.replace("models/", "") # Strip "models/" prefix for user-friendliness
+
+                token_limits = MODEL_TOKEN_LIMITS.get(model_id, {}) # Get known limits
+                # Try to find limits for base model if specific version not found
+                if not token_limits:
+                    base_model_id_parts = model_id.split('-')
+                    if len(base_model_id_parts) > 2 and not base_model_id_parts[-1].startswith(('0','1','latest')): # e.g. gemini-1.5-pro-001 -> gemini-1.5-pro
+                         base_model_id_prefix = '-'.join(base_model_id_parts[:-1])
+                         token_limits = MODEL_TOKEN_LIMITS.get(base_model_id_prefix + "-latest",
+                                         MODEL_TOKEN_LIMITS.get(base_model_id_prefix, {}))
+
+
+                processed_models.append({
+                    "id": model_id,
+                    "name": model_obj.display_name,
+                    "description": model_obj.description,
+                    "version": model_obj.version,
+                    "provider": "Google",
+                    "input_token_limit": token_limits.get("input"),
+                    "output_token_limit": token_limits.get("output"),
+                    "pricing_details_url": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
+                    "notes": None
+                })
+
+        if not processed_models:
+            logger.warning("No suitable generative models found via API. Falling back.")
+            _model_cache = (current_time, _FALLBACK_MODELS)
+            return _FALLBACK_MODELS
+
+        logger.info(f"Successfully fetched and processed {len(processed_models)} models.")
+        _model_cache = (current_time, processed_models)
+        return processed_models
+
+    except Exception as e:
+        logger.error(f"Failed to list models from Google API: {e}", exc_info=True)
+        logger.warning("Falling back to hardcoded model list.")
+        _model_cache = (current_time, _FALLBACK_MODELS) # Cache fallback to prevent repeated API errors
+        return _FALLBACK_MODELS

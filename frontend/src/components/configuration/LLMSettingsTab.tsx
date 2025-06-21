@@ -12,25 +12,38 @@ import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { KeyRound, CheckCircle, XCircle, Save, Loader2, Info, Brain, DollarSign, Thermometer, TestTube } from 'lucide-react';
 import { useConfiguration } from '@/contexts/ConfigurationContext';
+import { useLLMConfig } from '@/contexts/LLMContext'; // Import useLLMConfig to access dynamic models
 
-const availableModels = {
-  googleAI: [
-    'gemini-2.5-flash-preview-05-20',
-    'gemini-2.5-pro-preview-05-06',
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-lite',
-  ],
-};
+// Remove static availableModels, will use from LLMContext
+// const availableModels = {
+// googleAI: [
+// 'gemini-2.5-flash-preview-05-20',
+// 'gemini-2.5-pro-preview-05-06',
+// 'gemini-2.0-flash',
+// 'gemini-2.0-flash-lite',
+// ],
+// };
 
+// This list might also become dynamic or fetched alongside model details if it varies significantly
 const modelsSupportingThinkingBudget = [
   'gemini-2.5-flash-preview-05-20',
   'gemini-2.5-pro-preview-05-06',
   'gemini-2.0-flash',
   'gemini-2.0-flash-lite',
+  'gemini-1.5-flash-latest', // Added based on common model IDs
+  'gemini-1.5-pro-latest',
 ];
 
 export function LLMSettingsTab() {
   const { llmConfig, updateLLMConfig, validateLLMConnection } = useConfiguration();
+  // Use LLMContext to get dynamic model list, loading states, and error states
+  const {
+    modelDetails,
+    isLoadingModels,
+    modelError,
+    // availableModels: llmContextAvailableModels // if needed for provider keys
+  } = useLLMConfig();
+
   const [isValidating, setIsValidating] = useState(false);
   const [isSaving, startSavingTransition] = useTransition();
   const { toast } = useToast();
@@ -79,7 +92,31 @@ export function LLMSettingsTab() {
   };
 
   const showThinkingBudgetConfig = modelsSupportingThinkingBudget.includes(localModel);
-  const isBusy = isValidating || isSaving;
+  const isBusy = isValidating || isSaving || isLoadingModels; // Include isLoadingModels in isBusy
+
+  if (isLoadingModels) {
+    return (
+      <div className="flex items-center justify-center p-8">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <span className="ml-2 text-lg">Loading AI Models...</span>
+      </div>
+    );
+  }
+
+  if (modelError && !modelDetails.length) { // Show error only if modelDetails are also empty (true fallback)
+    return (
+      <Alert variant="destructive">
+        <XCircle className="h-4 w-4" />
+        <AlertTitle>Error Loading Models</AlertTitle>
+        <AlertDescription>
+          Could not fetch AI models: {modelError}. Using fallback/default models. Some features might be limited.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  const currentModelDetails = modelDetails.find(m => m.id === localModel && m.provider === "Google");
+
 
   return (
     <div className="space-y-6">
@@ -100,7 +137,7 @@ export function LLMSettingsTab() {
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="provider">Provider</Label>
-            <Select value={llmConfig.provider} disabled>
+            <Select value={llmConfig.provider} disabled> {/* Assuming provider is fixed to Google AI for now */}
               <SelectTrigger id="provider">
                 <SelectValue />
               </SelectTrigger>
@@ -114,16 +151,41 @@ export function LLMSettingsTab() {
             <Label htmlFor="model">Model</Label>
             <Select value={localModel} onValueChange={setLocalModel} disabled={isBusy}>
               <SelectTrigger id="model">
-                <SelectValue />
+                <SelectValue placeholder="Select a model" />
               </SelectTrigger>
               <SelectContent>
-                {availableModels.googleAI.map((model) => (
-                  <SelectItem key={model} value={model}>
-                    {model}
+                {modelDetails.filter(m => m.provider === "Google").map((modelInfo) => (
+                  <SelectItem key={modelInfo.id} value={modelInfo.id}>
+                    {modelInfo.name || modelInfo.id} ({modelInfo.version || 'N/A'})
                   </SelectItem>
                 ))}
+                 {modelDetails.filter(m => m.provider === "Google").length === 0 && (
+                    <SelectItem value={localModel} disabled>
+                        {localModel || "No models loaded, using default"}
+                    </SelectItem>
+                 )}
               </SelectContent>
             </Select>
+            {currentModelDetails && (
+            <div className="mt-2 p-3 border rounded-md bg-muted/50 text-sm">
+              <p className="font-semibold">{currentModelDetails.name}</p>
+              <p className="text-xs text-muted-foreground">{currentModelDetails.description || "No description available."}</p>
+              {currentModelDetails.input_token_limit && (
+                 <p className="text-xs mt-1">Input Tokens: {currentModelDetails.input_token_limit.toLocaleString()}</p>
+              )}
+              {currentModelDetails.output_token_limit && (
+                 <p className="text-xs">Output Tokens: {currentModelDetails.output_token_limit.toLocaleString()}</p>
+              )}
+              {currentModelDetails.pricing_details_url && (
+                <a href={currentModelDetails.pricing_details_url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline mt-1 block">
+                  View Pricing Details
+                </a>
+              )}
+               {currentModelDetails.notes && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Note: {currentModelDetails.notes}</p>
+              )}
+            </div>
+          )}
           </div>
         </CardContent>
       </Card>
