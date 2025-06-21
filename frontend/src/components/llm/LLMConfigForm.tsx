@@ -41,24 +41,22 @@ export function LLMConfigForm() {
     model: contextModel, setModel: setContextModel,
     isKeyValid: contextIsKeyValid, setIsKeyValid: setContextIsKeyValid,
     availableModels,
+    modelDetails, // Get the new full model details
+    isLoadingModels, // Loading state for models
+    modelError, // Error state for models
     // The following context values are for the *active* context model
-    // numericThinkingBudget: contextNumericThinkingBudget, 
     setNumericThinkingBudget: setContextNumericThinkingBudget,
-    // pricePerMillionInputTokens: contextPricePerMillionInputTokens,
     setPricePerMillionInputTokens: setContextPricePerMillionInputTokens,
-    // pricePerMillionOutputTokens: contextPricePerMillionOutputTokens,
     setPricePerMillionOutputTokens: setContextPricePerMillionOutputTokens,
-    // temperature: contextTemperature,
     setTemperature: setContextTemperature,
   } = useLLMConfig();
 
   // Local state for form fields
-  const [localProvider, setLocalProvider] = useState(contextProvider); // Currently fixed to 'googleAI'
+  const [localProvider, setLocalProvider] = useState(contextProvider);
   const [localApiKey, setLocalApiKey] = useState(contextApiKey);
-  const [localModel, setLocalModel] = useState(contextModel); // For the dropdown selection
+  const [localModel, setLocalModel] = useState(contextModel);
   const [localIsKeyValid, setLocalIsKeyValid] = useState<boolean | null>(contextIsKeyValid);
   
-  // These local states will hold settings for the model selected in `localModel` (dropdown)
   const [localNumericThinkingBudget, setLocalNumericThinkingBudget] = useState<number | undefined>(undefined);
   const [localPricePerMillionInputTokens, setLocalPricePerMillionInputTokens] = useState<number | undefined>(undefined);
   const [localPricePerMillionOutputTokens, setLocalPricePerMillionOutputTokens] = useState<number | undefined>(undefined);
@@ -148,7 +146,31 @@ export function LLMConfigForm() {
   };
 
   const showThinkingBudgetConfig = localProvider === 'googleAI' && localModel && modelsSupportingThinkingBudget.includes(localModel);
-  const isBusy = isValidating || isSaving;
+  const isBusy = isValidating || isSaving || isLoadingModels;
+
+  if (isLoadingModels) {
+    return (
+      <div className="flex items-center justify-center p-8">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <span className="ml-2 text-lg">Loading AI Models...</span>
+      </div>
+    );
+  }
+
+  if (modelError) {
+    return (
+      <Alert variant="destructive" className="max-w-2xl mx-auto">
+        <XCircle className="h-4 w-4" />
+        <AlertTitle>Error Loading Models</AlertTitle>
+        <AlertDescription>
+          Could not fetch the list of AI models: {modelError}. Please try again later or check the backend service.
+          Using fallback models for now.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  const currentModelDetails = modelDetails.find(m => m.id === localModel && m.provider.toLowerCase() === localProvider.toLowerCase());
 
   return (
     <div className="space-y-6 max-w-2xl mx-auto">
@@ -165,16 +187,15 @@ export function LLMConfigForm() {
 
       <div className="space-y-2">
         <Label htmlFor="llm-provider" className="text-base font-semibold">LLM Provider</Label>
-        <Select value={localProvider} onValueChange={() => {}} disabled={true}> {/* Provider is fixed */}
+        <Select value={localProvider} onValueChange={() => {}} disabled={true}> {/* Provider is fixed for now */}
           <SelectTrigger id="llm-provider" className="w-full rounded-md shadow-sm">
             <SelectValue placeholder="Select a provider" />
           </SelectTrigger>
           <SelectContent>
-            {Object.keys(availableModels).map(provKey => (
-                 <SelectItem key={provKey} value={provKey}>
-                    {providerDisplayNames[provKey] || provKey}
-                 </SelectItem>
-            ))}
+            {/* This could be dynamic if multiple providers were fetched */}
+            <SelectItem value="googleAI">
+              {providerDisplayNames["googleAI"] || "googleAI"}
+            </SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -217,24 +238,44 @@ export function LLMConfigForm() {
               <SelectValue placeholder="Select a model" />
             </SelectTrigger>
             <SelectContent>
-              {availableModels[localProvider].map((modelName) => (
-                <SelectItem key={modelName} value={modelName}>
-                  {modelName}
+              {modelDetails.filter(m => m.provider.toLowerCase() === localProvider.toLowerCase()).map((modelInfo) => (
+                <SelectItem key={modelInfo.id} value={modelInfo.id}>
+                  {modelInfo.name || modelInfo.id} ({modelInfo.version})
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+          {currentModelDetails && (
+            <div className="mt-2 p-3 border rounded-md bg-muted/50 text-sm">
+              <p className="font-semibold">{currentModelDetails.name}</p>
+              <p className="text-xs text-muted-foreground">{currentModelDetails.description || "No description available."}</p>
+              {currentModelDetails.input_token_limit && (
+                 <p className="text-xs mt-1">Input Tokens: {currentModelDetails.input_token_limit.toLocaleString()}</p>
+              )}
+              {currentModelDetails.output_token_limit && (
+                 <p className="text-xs">Output Tokens: {currentModelDetails.output_token_limit.toLocaleString()}</p>
+              )}
+              {currentModelDetails.pricing_details_url && (
+                <a href={currentModelDetails.pricing_details_url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline mt-1 block">
+                  View Pricing Details
+                </a>
+              )}
+              {currentModelDetails.notes && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Note: {currentModelDetails.notes}</p>
+              )}
+            </div>
+          )}
            <p className="text-xs text-muted-foreground mt-1">
              This selection updates the active model for the UI and informs server-side flows. Model-specific settings like pricing and temperature will adapt.
            </p>
         </div>
       )}
       
-      {showThinkingBudgetConfig && (
+      {showThinkingBudgetConfig && currentModelDetails && (
         <div className="space-y-4 p-4 border rounded-lg bg-card shadow-sm">
           <Label htmlFor="thinking-budget-slider" className="text-base font-semibold flex items-center">
             <Brain className="mr-2 h-5 w-5 text-primary" />
-            Thinking Budget (for {localModel})
+            Thinking Budget (for {currentModelDetails.name})
           </Label>
           <div className="flex items-center gap-4">
             <Slider

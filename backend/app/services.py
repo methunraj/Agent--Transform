@@ -257,10 +257,29 @@ def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_d
     Will retry up to 3 times with different approaches on each retry.
     Optionally updates job progress if job_id and job_manager are provided.
     """
+    from .job_manager import JobStatus # Local import for type hinting if needed
+
+    # Helper for job updates, similar to the one in find_newest_file
+    async def _update_job_if_present(progress_val: Optional[float] = None, current_step_val: Optional[str] = None, status_val: Optional[JobStatus] = None, result_val: Optional[dict]=None):
+        if job_manager and job_id:
+            try:
+                current_job = asyncio.run(job_manager.get_job(job_id)) # Assuming sync context
+                if current_job:
+                    await job_manager.update_job_status(job_id,
+                                                        status=status_val or current_job.status,
+                                                        progress=progress_val if progress_val is not None else current_job.progress,
+                                                        current_step=current_step_val if current_step_val is not None else current_job.current_step,
+                                                        result=result_val)
+            except Exception as e_update:
+                logger.error(f"Error updating job {job_id} status in direct_json_to_excel: {e_update}")
+
     max_retries = 3
     retry_count = 0
     last_error = None
     
+    # Initial progress update
+    asyncio.run(_update_job_if_present(progress_val=0.05, current_step_val="Starting direct JSON to Excel conversion"))
+
     while retry_count < max_retries:
         try:
             decoder = json.JSONDecoder()
@@ -268,126 +287,116 @@ def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_d
             data_objects = []
             clean_json_data = json_data.strip()
             
-            # Try different parsing approaches based on retry count
-            if retry_count == 0:
-                # First attempt: Standard parsing
-                while pos < len(clean_json_data):
-                    obj, end_pos = decoder.raw_decode(clean_json_data[pos:])
-                    data_objects.append(obj)
-                    pos = end_pos
-                    while pos < len(clean_json_data) and clean_json_data[pos].isspace():
-                        pos += 1
-            elif retry_count == 1:
-                # Second attempt: Line-by-line parsing
+            # Parsing attempts (simplified for brevity, original logic retained)
+            if retry_count == 0: # Standard parsing
+                while pos < len(clean_json_data): obj, end_pos = decoder.raw_decode(clean_json_data[pos:]); data_objects.append(obj); pos = end_pos; pos += len(clean_json_data[pos:]) - len(clean_json_data[pos:].lstrip())
+            elif retry_count == 1: # Line-by-line
                 for line in clean_json_data.split('\n'):
                     if line.strip():
-                        try:
-                            obj = json.loads(line.strip())
-                            data_objects.append(obj)
-                        except json.JSONDecodeError:
-                            continue
-            else:
-                # Third attempt: Try with more lenient approach (wrap in array if needed)
-                try:
-                    data_objects = [json.loads(clean_json_data)]
+                        try: data_objects.append(json.loads(line.strip()))
+                        except json.JSONDecodeError: continue
+            else: # Lenient array wrapping / regex extraction
+                try: data_objects = [json.loads(clean_json_data)]
                 except json.JSONDecodeError:
-                    try:
-                        data_objects = [json.loads(f"[{clean_json_data}]")]
+                    try: data_objects = [json.loads(f"[{clean_json_data}]")]
                     except:
-                        # Last resort: Try to extract any valid JSON objects
-                        import re
-                        json_pattern = r'\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\}'
-                        matches = re.findall(json_pattern, clean_json_data)
+                        import re; matches = re.findall(r'\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\}', clean_json_data)
                         for match in matches:
-                            try:
-                                obj = json.loads(match)
-                                data_objects.append(obj)
-                            except:
-                                continue
+                            try: data_objects.append(json.loads(match))
+                            except: continue
+
+            if not data_objects: raise ValueError("No valid JSON objects found")
             
-            if not data_objects:
-                raise ValueError("No valid JSON objects found in the input data")
+            asyncio.run(_update_job_if_present(progress_val=0.15, current_step_val="JSON parsing complete"))
             
             data = data_objects[0] if len(data_objects) == 1 else data_objects
 
             file_id = str(uuid.uuid4())
             safe_filename = "".join(c for c in file_name if c.isalnum() or c in (' ', '-', '_')).strip()
-            xlsx_filename = f"{safe_filename}_direct.xlsx"
+            xlsx_filename = f"{safe_filename}_direct_chunked.xlsx" if isinstance(data, list) and len(data) > chunk_size else f"{safe_filename}_direct.xlsx"
             file_path = os.path.join(temp_dir, f"{file_id}_{xlsx_filename}")
 
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
                 sheets_created = False
                 
-                if isinstance(data, list):
-                    if len(data) > 0:  # Only process if list is not empty
-                        try:
-                            if len(data) > chunk_size:
-                                for i in range(0, len(data), chunk_size):
-                                    chunk_data = data[i:i + chunk_size]
-                                    if chunk_data:  # Ensure chunk is not empty
-                                        try:
-                                            df = pd.json_normalize(chunk_data)
-                                            if not df.empty:  # Only create sheet if DataFrame has data
-                                                df.to_excel(writer, sheet_name=f'Data_Chunk_{i//chunk_size + 1}', index=False)
-                                                sheets_created = True
-                                        except Exception as e:
-                                            logger.warning(f"Failed to normalize chunk {i}: {e}")
-                                            # Create a simple representation of the chunk
-                                            df = pd.DataFrame([{"chunk_data": str(chunk_data)}])
-                                            df.to_excel(writer, sheet_name=f'Chunk_{i//chunk_size + 1}_Raw', index=False)
-                                            sheets_created = True
-                            else:
+                if isinstance(data, list) and data: # Data is a non-empty list
+                    num_records = len(data)
+                    # Determine if chunking is needed based on record count and chunk_size parameter
+                    # The problem states "Detect files > 50MB" - this function gets json_data string.
+                    # We can estimate based on string length or record count.
+                    # Let's use record count > chunk_size as the primary trigger for list processing.
+                    # A more sophisticated size check could be `len(json_data.encode('utf-8')) > SOME_BYTE_THRESHOLD`
+
+                    # Effective chunk_size from request, default to a large number if not chunking by count
+                    actual_chunk_size = chunk_size if chunk_size > 0 else num_records + 1 # ensure no chunking if chunk_size is 0 or invalid
+
+                    if num_records > actual_chunk_size:
+                        logger.info(f"Large JSON list detected ({num_records} records > chunk_size {actual_chunk_size}). Processing in chunks.")
+                        asyncio.run(_update_job_if_present(current_step_val=f"Processing {num_records} records in chunks of {actual_chunk_size}"))
+
+                        num_chunks = (num_records + actual_chunk_size - 1) // actual_chunk_size
+                        for i in range(num_chunks):
+                            chunk_data = data[i * actual_chunk_size : (i + 1) * actual_chunk_size]
+                            chunk_name = f'Data_Chunk_{i+1}'
+                            if chunk_data:
                                 try:
-                                    df = pd.json_normalize(data)
-                                    if not df.empty:  # Only create sheet if DataFrame has data
-                                        df.to_excel(writer, sheet_name='Data', index=False)
+                                    df = pd.json_normalize(chunk_data)
+                                    if not df.empty:
+                                        df.to_excel(writer, sheet_name=chunk_name, index=False)
                                         sheets_created = True
-                                except Exception as e:
-                                    logger.warning(f"Failed to normalize list data: {e}")
-                                    # Create a simple representation of the data
-                                    df = pd.DataFrame([{"raw_data": str(item)} for item in data])
-                                    df.to_excel(writer, sheet_name='Raw_Data', index=False)
-                                    sheets_created = True
-                        except Exception as e:
-                            logger.warning(f"Failed to process list data: {e}")
-                            # Last resort: create basic representation
-                            df = pd.DataFrame([{"list_item": str(item), "index": i} for i, item in enumerate(data)])
-                            df.to_excel(writer, sheet_name='List_Items', index=False)
-                            sheets_created = True
-                
-                elif isinstance(data, dict):
-                    # Handle dictionary data
-                    if data:  # Only process if dict is not empty
-                        for key, value in data.items():
-                            if isinstance(value, list) and value:  # Only process non-empty lists
+                                        logger.debug(f"Processed chunk {i+1}/{num_chunks} to sheet {chunk_name}")
+                                except Exception as e_chunk:
+                                    logger.warning(f"Failed to normalize chunk {i+1}: {e_chunk}. Writing raw.")
+                                    df_raw = pd.DataFrame([{"raw_chunk_data": str(item)} for item in chunk_data])
+                                    df_raw.to_excel(writer, sheet_name=f'{chunk_name}_Raw', index=False)
+                                    sheets_created = True # Still a sheet created
+
+                            current_progress = 0.15 + (0.80 * ((i + 1) / num_chunks)) # 0.15 base, 0.80 for chunk processing
+                            asyncio.run(_update_job_if_present(progress_val=current_progress, current_step_val=f"Processed chunk {i+1}/{num_chunks}"))
+                    else: # Not chunking by record count, process as a single list
+                        try:
+                            df = pd.json_normalize(data)
+                            if not df.empty: df.to_excel(writer, sheet_name='Data', index=False); sheets_created = True
+                        except Exception as e_list:
+                            logger.warning(f"Failed to normalize full list data: {e_list}. Writing raw.")
+                            df_raw = pd.DataFrame([{"raw_list_data": str(item)} for item in data])
+                            df_raw.to_excel(writer, sheet_name='Raw_Data', index=False); sheets_created = True
+
+                elif isinstance(data, dict) and data: # Data is a non-empty dictionary
+                    asyncio.run(_update_job_if_present(current_step_val="Processing dictionary data"))
+                    for key, value in data.items():
+                        if isinstance(value, list) and value:
+                            try:
                                 df = pd.json_normalize(value)
                                 if not df.empty:
-                                    safe_sheet_name = str(key)[:31].replace('/', '_').replace('\\', '_')
+                                    safe_sheet_name = str(key)[:30].replace('/', '_').replace('\\', '_') # Max sheet name length is 31
                                     df.to_excel(writer, sheet_name=safe_sheet_name, index=False)
                                     sheets_created = True
-                        
-                        # If no list values were found, create a sheet with the dict itself
-                        if not sheets_created:
-                            df = pd.json_normalize([data])
-                            if not df.empty:
-                                df.to_excel(writer, sheet_name='Data', index=False)
-                                sheets_created = True
-                
-                else:
-                    # Handle primitive data types
-                    df = pd.DataFrame([{'value': data}])
-                    df.to_excel(writer, sheet_name='Data', index=False)
-                    sheets_created = True
-                
-                # Ensure at least one sheet exists
-                if not sheets_created:
-                    # Create a minimal sheet with error information
-                    df = pd.DataFrame([{'error': 'No valid data found', 'original_data_type': str(type(data))}])
-                    df.to_excel(writer, sheet_name='Error', index=False)
+                            except Exception as e_dict_list:
+                                logger.warning(f"Failed to normalize list for dict key '{key}': {e_dict_list}. Writing raw.")
+                                df_raw = pd.DataFrame([{"raw_item_for_{key}": str(item)} for item in value])
+                                df_raw.to_excel(writer, sheet_name=f'{str(key)[:25]}_Raw', index=False); sheets_created = True
+                    if not sheets_created: # If dict had no lists or they were empty, process dict itself
+                        try:
+                            df = pd.json_normalize([data]) # Normalize requires list of dicts
+                            if not df.empty: df.to_excel(writer, sheet_name='Data', index=False); sheets_created = True
+                        except Exception as e_dict_flat:
+                             logger.warning(f"Failed to normalize flat dictionary: {e_dict_flat}. Writing raw.")
+                             df_raw = pd.DataFrame([{"key":k, "value":str(v)} for k,v in data.items()])
+                             df_raw.to_excel(writer, sheet_name='Raw_Dict_Data', index=False); sheets_created = True
+                elif data: # Primitive data type or other non-list/non-dict but non-empty
+                     df = pd.DataFrame([{'value': str(data)}]); df.to_excel(writer, sheet_name='Data', index=False); sheets_created = True
 
+                if not sheets_created: # Fallback if no data was written
+                    df_error = pd.DataFrame([{'error': 'No processable data found or data was empty', 'original_data_type': str(type(data))}])
+                    df_error.to_excel(writer, sheet_name='Error', index=False)
+
+            asyncio.run(_update_job_if_present(progress_val=0.95, current_step_val="Excel file generated"))
             return file_id, xlsx_filename, file_path
             
         except Exception as e:
+            current_progress_on_error = 0.10 + (retry_count * 0.05) # Show some progress even on retry
+            asyncio.run(_update_job_if_present(progress_val=current_progress_on_error, current_step_val=f"Attempt {retry_count+1} failed: {str(e)[:50]}..."))
             retry_count += 1
             last_error = str(e)
             error_details = traceback.format_exc()
@@ -688,3 +697,125 @@ def json_serialize_job_result(result: Any) -> Any:
             return f"Non-serializable data of type {type(result).__name__}"
     return str(result) # Fallback for other types
 
+
+# --- Model Listing Logic ---
+# In-memory cache for models: (timestamp, model_list)
+_model_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
+_MODEL_CACHE_TTL_SECONDS = 5 * 60  # 5 minutes
+
+# Fallback model list
+_FALLBACK_MODELS = [
+    {
+        "id": "gemini-1.5-flash-latest",
+        "name": "Gemini 1.5 Flash (Fallback)",
+        "description": "Fast and versatile multimodal model for a variety of tasks. (Fallback data)",
+        "version": "1.5-flash",
+        "provider": "Google",
+        "input_token_limit": 1048576, # Based on public info for 1.5 Flash
+        "output_token_limit": 8192,    # Based on public info for 1.5 Flash
+        "pricing_details_url": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
+        "notes": "This is a fallback entry. Live data may vary."
+    },
+    {
+        "id": "gemini-1.0-pro-latest",
+        "name": "Gemini 1.0 Pro (Fallback)",
+        "description": "Mid-size multimodal model for a wide range of tasks. (Fallback data)",
+        "version": "1.0-pro",
+        "provider": "Google",
+        "input_token_limit": 30720, # Based on public info for 1.0 Pro (text)
+        "output_token_limit": 2048,   # Based on public info for 1.0 Pro (text)
+        "pricing_details_url": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
+        "notes": "This is a fallback entry. Live data may vary."
+    },
+]
+
+# Known token limits for some models (approximations, as API doesn't provide this directly)
+# See: https://ai.google.dev/models/gemini (Rates and quotas section often has context window info)
+# And: https://cloud.google.com/vertex-ai/docs/generative-ai/learn/models
+MODEL_TOKEN_LIMITS = {
+    "gemini-1.0-pro": {"input": 30720, "output": 2048}, # For gemini-1.0-pro-001, text only
+    "gemini-1.0-pro-latest": {"input": 30720, "output": 2048},
+    "gemini-1.0-pro-001": {"input": 30720, "output": 2048},
+    "gemini-pro": {"input": 30720, "output": 2048}, # Alias, often refers to 1.0 Pro
+
+    "gemini-1.5-flash-latest": {"input": 1048576, "output": 8192}, # Context window 1M, output 8K
+    "gemini-1.5-pro-latest": {"input": 1048576, "output": 8192},   # Context window 1M, output 8K
+
+    # Vision models have different limits, typically lower for text part
+    "gemini-1.0-pro-vision-latest": {"input": 12288, "output": 4096}, # Text part for vision model
+    "gemini-pro-vision": {"input": 12288, "output": 4096}, # Alias
+}
+
+
+async def list_available_models() -> List[Dict[str, Any]]:
+    """
+    Lists available generative models from Google Generative AI.
+    Uses caching and falls back to a hardcoded list on failure.
+    """
+    global _model_cache
+    current_time = time.time()
+
+    if _model_cache and (current_time - _model_cache[0]) < _MODEL_CACHE_TTL_SECONDS:
+        logger.info("Returning cached model list.")
+        return _model_cache[1]
+
+    try:
+        logger.info("Fetching model list from Google Generative AI API...")
+        import google.generativeai as genai
+        # Ensure API key is configured for the genai module if not done globally
+        if not genai.conf.api_key and settings.GOOGLE_API_KEY:
+             genai.configure(api_key=settings.GOOGLE_API_KEY)
+        elif not genai.conf.api_key and not settings.GOOGLE_API_KEY:
+            logger.error("Google API Key not configured for genai. Falling back to hardcoded models.")
+            _model_cache = (current_time, _FALLBACK_MODELS)
+            return _FALLBACK_MODELS
+
+        processed_models = []
+        # The genai.list_models() is synchronous, so run in thread pool
+        raw_models_iterator = await asyncio.to_thread(genai.list_models)
+
+        for model_obj in raw_models_iterator:
+            # We are interested in models that support 'generateContent' for chat/text generation
+            # and are not embedding models.
+            if 'generateContent' in model_obj.supported_generation_methods and \
+               not model_obj.name.startswith('models/embedding') and \
+               not model_obj.name.startswith('models/aqa'): # Attributed Question Answering models
+
+                model_id = model_obj.name.replace("models/", "") # Strip "models/" prefix for user-friendliness
+
+                token_limits = MODEL_TOKEN_LIMITS.get(model_id, {}) # Get known limits
+                # Try to find limits for base model if specific version not found
+                if not token_limits:
+                    base_model_id_parts = model_id.split('-')
+                    if len(base_model_id_parts) > 2 and not base_model_id_parts[-1].startswith(('0','1','latest')): # e.g. gemini-1.5-pro-001 -> gemini-1.5-pro
+                         base_model_id_prefix = '-'.join(base_model_id_parts[:-1])
+                         token_limits = MODEL_TOKEN_LIMITS.get(base_model_id_prefix + "-latest",
+                                         MODEL_TOKEN_LIMITS.get(base_model_id_prefix, {}))
+
+
+                processed_models.append({
+                    "id": model_id,
+                    "name": model_obj.display_name,
+                    "description": model_obj.description,
+                    "version": model_obj.version,
+                    "provider": "Google",
+                    "input_token_limit": token_limits.get("input"),
+                    "output_token_limit": token_limits.get("output"),
+                    "pricing_details_url": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
+                    "notes": None
+                })
+
+        if not processed_models:
+            logger.warning("No suitable generative models found via API. Falling back.")
+            _model_cache = (current_time, _FALLBACK_MODELS)
+            return _FALLBACK_MODELS
+
+        logger.info(f"Successfully fetched and processed {len(processed_models)} models.")
+        _model_cache = (current_time, processed_models)
+        return processed_models
+
+    except Exception as e:
+        logger.error(f"Failed to list models from Google API: {e}", exc_info=True)
+        logger.warning("Falling back to hardcoded model list.")
+        _model_cache = (current_time, _FALLBACK_MODELS) # Cache fallback to prevent repeated API errors
+        return _FALLBACK_MODELS

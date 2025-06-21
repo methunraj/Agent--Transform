@@ -97,3 +97,19 @@ class JobStatusResponse(BaseModel):
     updated_at: datetime
     result: Optional[dict] = None # To store final job output, including potential download URLs or errors
 
+
+# --- Schema for Model Information ---
+class ModelInfo(BaseModel):
+    id: str # e.g., "gemini-1.5-flash-latest" (used in API calls)
+    name: str # e.g., "Gemini 1.5 Flash" (display name)
+    description: Optional[str] = None
+    version: Optional[str] = None
+    provider: str = "Google" # Could be extended if other providers are added
+    # supported_generation_methods: Optional[List[str]] = None # From Google API
+    input_token_limit: Optional[int] = None # Example: 128000 for Gemini 1.0 Pro
+    output_token_limit: Optional[int] = None # Example: 2048 for Gemini 1.0 Pro
+    pricing_details_url: Optional[str] = Field(None, description="Link to official pricing documentation")
+    notes: Optional[str] = None # For any additional info, e.g., "Preview model"
+
+    class Config:
+        orm_mode = True # or from_attributes = True for Pydantic v2

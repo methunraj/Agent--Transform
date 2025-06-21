@@ -626,6 +626,26 @@ async def health_check():
 
     status_code = 200 if health_status["status"] == "healthy" else 503
     return JSONResponse(content=health_status, status_code=status_code)
+
+
+# --- Model Management Endpoint ---
+@app.get("/api/models", response_model=List[schemas.ModelInfo]) # Assuming ModelInfo schema will be created
+async def get_available_models():
+    """
+    Lists available AI models, primarily from Google Generative AI,
+    with caching and fallback to a hardcoded list.
+    Includes pricing information URL.
+    """
+    try:
+        # This service function will handle caching and fallback internally
+        models = await services.list_available_models()
+        return models
+    except Exception as e:
+        logger.error(f"Error fetching available models: {e}", exc_info=True)
+        # Fallback to a minimal list or error response if services.list_available_models itself fails severely
+        # However, list_available_models is designed to have its own fallback.
+        # If it still raises an exception, it's a more critical issue.
+        raise HTTPException(status_code=500, detail=f"Could not retrieve model list: {str(e)}")
 async def get_system_metrics():
     with app_state["LOCK"]:
         metrics = app_state["METRICS"].copy()

@@ -75,55 +75,113 @@ const LLMContext = createContext<LLMContextType | undefined>(undefined);
 export function LLMProvider({ children }: { children: React.ReactNode }) {
   const [_provider, _setInternalProvider] = useState('googleAI'); 
   const [apiKey, _setInternalApiKey] = useState('');
-  const [model, _setInternalModel] = useState(''); // Initialized in useEffect
+  const [model, _setInternalModel] = useState('');
   const [isKeyValid, setIsKeyValid] = useState<boolean | null>(null);
+  const [availableModels, setAvailableModels] = useState<Record<string, string[]>>(defaultAvailableModels);
+  const [modelDetails, setModelDetails] = useState<any[]>([]); // To store full model info from backend
+  const [isLoadingModels, setIsLoadingModels] = useState<boolean>(true);
+  const [modelError, setModelError] = useState<string | null>(null);
   
   const [numericThinkingBudget, _setInternalNumericThinkingBudget] = useState<number | undefined>(undefined);
   const [pricePerMillionInputTokens, _setInternalPricePerMillionInputTokens] = useState<number | undefined>(undefined);
   const [pricePerMillionOutputTokens, _setInternalPricePerMillionOutputTokens] = useState<number | undefined>(undefined);
   const [temperature, _setInternalTemperature] = useState<number>(0.3);
 
+  // Fetch available models from the backend
+  useEffect(() => {
+    const fetchModels = async () => {
+      setIsLoadingModels(true);
+      setModelError(null);
+      try {
+        const response = await fetch('/api/ai-models'); // Calls our Next.js API proxy
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || `Failed to fetch models: ${response.status}`);
+        }
+        const data = await response.json();
+
+        // Assuming data is an array of ModelInfo objects from backend schema
+        // We need to transform it into Record<string, string[]> for existing availableModels structure
+        // and also store the full details.
+        const googleModels = data.filter((m: any) => m.provider === 'Google').map((m: any) => m.id);
+
+        if (googleModels.length > 0) {
+          setAvailableModels({ googleAI: googleModels });
+          setModelDetails(data); // Store full details
+
+          // Initialize model if not already set or if current model is not in new list
+          const currentStoredModel = localStorage.getItem('intelliextract_model_googleAI');
+          if (!currentStoredModel || !googleModels.includes(currentStoredModel)) {
+            const newInitialModel = googleModels[0];
+            _setInternalModel(newInitialModel);
+            localStorage.setItem('intelliextract_model_googleAI', newInitialModel);
+          } else {
+            _setInternalModel(currentStoredModel); // Keep existing valid model
+          }
+        } else {
+          // Fallback to default hardcoded if API returns empty or no Google models
+          setAvailableModels(defaultAvailableModels);
+          setModelDetails([]); // Or transform defaultAvailableModels to ModelInfo structure
+           const newInitialModel = defaultAvailableModels['googleAI']?.[0] || '';
+          _setInternalModel(newInitialModel);
+          localStorage.setItem('intelliextract_model_googleAI', newInitialModel);
+        }
+
+      } catch (error) {
+        console.error("Error fetching models:", error);
+        setModelError(error instanceof Error ? error.message : String(error));
+        setAvailableModels(defaultAvailableModels); // Fallback on error
+        setModelDetails([]);
+        const fallbackModel = defaultAvailableModels['googleAI']?.[0] || '';
+        _setInternalModel(fallbackModel); // Set to a fallback model
+        localStorage.setItem('intelliextract_model_googleAI', fallbackModel);
+      } finally {
+        setIsLoadingModels(false);
+      }
+    };
+
+    fetchModels();
+  }, []);
+
 
   // Effect for initializing the provider and API key from localStorage ONCE on mount
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      // Provider is fixed for now
-      // _setInternalProvider(localStorage.getItem('intelliextract_provider') || 'googleAI');
       _setInternalApiKey(localStorage.getItem('intelliextract_apiKey_googleAI') || '');
-      
-      const lastActiveModel = localStorage.getItem('intelliextract_model_googleAI') || defaultAvailableModels['googleAI']?.[0] || '';
-      _setInternalModel(lastActiveModel);
-      // isKeyValid might also be stored/loaded if desired
+      // Model initialization is now handled by the fetchModels effect
     }
   }, []);
 
   // Effect for loading model-specific settings (prices, temp, budget) when 'model' state changes
   useEffect(() => {
-    if (typeof window !== 'undefined' && model) { // model is the current context state
-      const providerId = 'googleAI'; // Assuming fixed provider
+    if (typeof window !== 'undefined' && model) {
+      // const providerId = 'googleAI'; // Assuming fixed provider for now
+      // const modelInfo = modelDetails.find(m => m.id === model && m.provider.toLowerCase() === providerId.toLowerCase());
 
-      const storedInputPrice = localStorage.getItem(`intelliextract_priceInput_${providerId}_${model}`);
-      _setInternalPricePerMillionInputTokens(storedInputPrice ? (parseFloat(storedInputPrice) || undefined) : undefined);
+      // Prices are not directly available from model object; use stored or default.
+      // Pricing URL is available in modelInfo.pricing_details_url
 
-      const storedOutputPrice = localStorage.getItem(`intelliextract_priceOutput_${providerId}_${model}`);
-      _setInternalPricePerMillionOutputTokens(storedOutputPrice ? (parseFloat(storedOutputPrice) || undefined) : undefined);
+      // const storedInputPrice = localStorage.getItem(`intelliextract_priceInput_${providerId}_${model}`);
+      // _setInternalPricePerMillionInputTokens(storedInputPrice ? (parseFloat(storedInputPrice) || undefined) : undefined);
+      // const storedOutputPrice = localStorage.getItem(`intelliextract_priceOutput_${providerId}_${model}`);
+      // _setInternalPricePerMillionOutputTokens(storedOutputPrice ? (parseFloat(storedOutputPrice) || undefined) : undefined);
+      // For now, pricing is not set dynamically per model from API, so this part can be simplified or removed
+      // if pricing is managed elsewhere or displayed via the pricing_details_url.
       
       _setInternalTemperature(getInitialTemperatureForModel(model));
       _setInternalNumericThinkingBudget(getInitialNumericThinkingBudgetForModel(model));
     }
-  }, [model]); // Runs when context's 'model' changes
+  }, [model, modelDetails]);
 
 
   const setProvider = useCallback((newProvider: string) => {
-    if (newProvider === 'googleAI') { // Currently only supporting Google AI
+    if (newProvider === 'googleAI') {
       _setInternalProvider(newProvider);
-      // localStorage.setItem('intelliextract_provider', newProvider);
-      // Potentially reset other provider-specific settings if needed, and update active model
-      const defaultModelForNewProvider = defaultAvailableModels[newProvider]?.[0] || '';
-      _setInternalModel(defaultModelForNewProvider); // This will trigger the useEffect for model settings
+      const defaultModelForNewProvider = availableModels[newProvider]?.[0] || defaultAvailableModels[newProvider]?.[0] || '';
+      _setInternalModel(defaultModelForNewProvider);
       localStorage.setItem('intelliextract_model_googleAI', defaultModelForNewProvider);
     }
-  }, []);
+  }, [availableModels]);
 
   const setApiKey = useCallback((newApiKey: string) => {
     _setInternalApiKey(newApiKey);
@@ -133,13 +191,16 @@ export function LLMProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setModel = useCallback((newModel: string) => {
-    if (defaultAvailableModels['googleAI']?.includes(newModel)) {
-      _setInternalModel(newModel); // This state change triggers the useEffect above to load settings for newModel
+    // Check against the dynamically fetched models for 'googleAI' provider
+    if (availableModels['googleAI']?.includes(newModel)) {
+      _setInternalModel(newModel);
       if (typeof window !== 'undefined') {
         localStorage.setItem(`intelliextract_model_googleAI`, newModel);
       }
+    } else {
+      console.warn(`Attempted to set model "${newModel}" which is not in the available list for GoogleAI.`);
     }
-  }, []);
+  }, [availableModels]);
 
   const setNumericThinkingBudget = useCallback((newBudget: number | undefined, forWhichModel: string) => {
     if (typeof window !== 'undefined') {
