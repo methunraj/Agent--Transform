@@ -418,9 +418,9 @@ export function JobProvider({ children }: { children: React.ReactNode }) {
           try {
             setCurrentTask(`Enhancing data with Agno AI for ${fileJob.name}...`);
             
-            // Create AbortController for 20 minute timeout
+            // Create AbortController for 45 minute timeout (2,700,000 ms)
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 20 * 60 * 1000); // 20 minutes
+            const timeoutId = setTimeout(() => controller.abort(), 2700 * 1000); // 45 minutes
             
             const agnoResponse = await fetch('/api/agno-process', {
               method: 'POST',

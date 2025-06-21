@@ -71,4 +71,29 @@ class SystemMetrics(BaseModel):
     average_processing_time: float
     active_files: int
     temp_directory: str
+    active_jobs: Optional[int] = None
+    pending_jobs_in_queue: Optional[int] = None
+    jobs_created_total: Optional[int] = None
+    job_worker_count: Optional[int] = None
+
+
+# --- New Schemas for Asynchronous Job System ---
+from .job_manager import JobStatus # Import JobStatus enum
+from datetime import datetime
+
+class JobCreationResponse(BaseModel):
+    job_id: str
+    status_url: str
+    stream_url: str
+    websocket_url: str
+
+class JobStatusResponse(BaseModel):
+    id: str
+    name: Optional[str] = None
+    status: JobStatus
+    progress: float = 0.0
+    current_step: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    result: Optional[dict] = None # To store final job output, including potential download URLs or errors
 

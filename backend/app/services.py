@@ -79,118 +79,58 @@ def create_agno_agent(model: str, temp_dir: str) -> Agent:
     if not settings.GOOGLE_API_KEY:
         raise ValueError("GOOGLE_API_KEY is not set in the environment.")
 
-    # --- ENHANCED COMPREHENSIVE INSTRUCTIONS (Following Agno Best Practices) ---
+    # --- SIMPLIFIED AND FOCUSED INSTRUCTIONS (approx. 50 lines) ---
     instructions = [
-        "You are a senior financial analyst. Create a COMPREHENSIVE multi-sheet Excel report with charts, colorful tables, and meaningful narratives.",
-        "Save and run a Python script named 'excel_report_generator.py'",
-        "For currency conversion, use the google_search function to find current exchange rates (e.g., 'USD to EUR exchange rate')", 
-        "The google_search function is available and returns results as JSON formatted string",
+        "You are an AI assistant. Your task is to generate a Python script to convert JSON data into an Excel file.",
+        "Goal: Create a functional Excel report quickly. Focus on speed and core data representation over exhaustive detail or complex formatting.",
+        "Complete the task within 10 minutes.",
         
-        "## MANDATORY REPORT STRUCTURE:",
-        "Create these sheets with enhanced formatting: Executive Summary, Detailed Analysis, Income Statement, Balance Sheet, Cash Flow, Regional Performance, Market Trends, Key Metrics Dashboard",
+        "**Core Requirements:**",
+        "1. Script Name: `excel_generator.py`.",
+        "2. Data Handling: Process all main fields from the input JSON. If data is nested, flatten it appropriately for tabular representation.",
+        "3. Excel Output: Create a multi-sheet Excel file if the JSON structure suggests multiple tables (e.g., list of objects for different sheets, or a top-level dictionary where keys are sheet names). Otherwise, a single sheet is fine.",
+        "4. Currency: If currency data is present, represent it as numbers. Basic currency formatting (e.g., '$#,##0.00') is a plus if easily done.",
+        "5. Charts (Optional): If time permits and data is suitable, add 1-2 simple charts (bar or line) for key metrics. Do not spend excessive time on charts.",
+        "6. Formatting (Basic): Use `openpyxl` for basic table headers (bold). Complex coloring or styling is secondary to speed.",
         
-        "## VISUAL ENHANCEMENTS - MUST INCLUDE:",
-        "1. CHARTS: Create at least 5 different chart types using openpyxl.chart:",
-        "   - Bar charts for comparisons (revenue by region, segment performance)",
-        "   - Line charts for trends (quarterly performance, growth rates)", 
-        "   - Pie charts for composition (portfolio breakdown, geographic distribution)",
-        "   - Area charts for cumulative data (cash flow, debt accumulation)",
-        "   - Scatter plots for correlations (cap rate vs occupancy, risk/return)",
+        "**Technical Guidelines:**",
+        "- Use `openpyxl` for Excel generation. `pandas` can be used for data manipulation if it simplifies the process.",
+        "- Ensure the script saves the Excel file in the current working directory (provided as `temp_dir`).",
+        "- Script must be runnable and handle potential errors gracefully (e.g., missing keys in JSON).",
+        "- Print the absolute file path of the generated Excel file upon successful completion.",
         
-        "2. COLORFUL TABLES: Apply professional formatting to ALL tables:",
-        "   - Use PatternFill for header backgrounds (dark blue: '366092')",
-        "   - Apply Font styling (white text for headers, bold formatting)",
-        "   - Add Border styling (thin borders around all cells)",
-        "   - Use Alignment (center headers, right-align numbers)",
-        "   - Apply conditional formatting for KPIs (green for positive, red for negative)",
-        "   - Use number formatting for currencies, percentages, and large numbers",
+        "**Error Handling:**",
+        "- If your script fails, review the error, correct the script, and retry.",
+        "- Prioritize generating a usable Excel file quickly. If complex features cause issues, simplify them.",
         
-        "3. DATA COMPLETENESS - NEVER MISS DATA:",
-        "   - Extract and analyze EVERY field from the JSON data",
-        "   - Create summary statistics for all numerical data",
-        "   - Include data validation and completeness checks",
-        "   - Show data sources and timestamps",
-        "   - Calculate derived metrics (ratios, growth rates, benchmarks)",
+        "**Tool Usage:**",
+        "- `PythonTools`: For writing, saving, and running your `excel_generator.py` script.",
+        "- `GoogleSearchTools`: Only if absolutely necessary (e.g., to quickly find a specific `openpyxl` usage pattern if stuck). Avoid for general research to save time.",
         
-        "4. MEANINGFUL NARRATIVES - BUILD STORY:",
-        "   - Add text boxes with key insights and interpretations",
-        "   - Include executive summary with 3-5 key findings",
-        "   - Provide trend analysis and forecasting where applicable",
-        "   - Add risk assessment and opportunities sections",
-        "   - Include recommendations based on data analysis",
-        "   - Compare against industry benchmarks where possible",
-        
-        "## TECHNICAL REQUIREMENTS:",
-        "Use relative paths only - all files in current working directory",
-        "Import required libraries: openpyxl, openpyxl.chart, openpyxl.styles, openpyxl.formatting, matplotlib (for complex charts)",
-        "Keep code modular and well-documented",
-        
-        "## ERROR HANDLING - CRITICAL:",
-        "If any code execution fails, you MUST:",
-        "1. Read the error message carefully",
-        "2. Identify the root cause (e.g. data structure issues, missing imports)",
-        "3. Fix the code immediately", 
-        "4. Save and run the corrected code",
-        "5. Repeat until Excel file is successfully created with ALL enhancements",
-        "REMEMBER: You have run_files=True so you can execute Python files directly",
-        "The balance sheet equity section is a flat dictionary, not nested like assets/liabilities",
-        "DO NOT GIVE UP - keep trying until the Excel file exists with charts, colors, and complete data analysis",
-        
-        "## QUALITY STANDARDS:",
-        "- Every sheet must have professional formatting",
-        "- All numerical data must be properly formatted (currency, percentages)",
-        "- Charts must have proper titles, axis labels, and legends",
-        "- Include data validation and error checking",
-        "- Ensure all source data is captured and analyzed",
-        "- Create a comprehensive table of contents on the first sheet"
+        "**Focus on Speed:**",
+        "- Avoid overly complex logic or visual enhancements if they significantly slow down development or processing.",
+        "- A simpler, correct Excel file delivered quickly is better than a complex one that is late or error-prone.",
+        "- If the JSON is very large or deeply nested, focus on representing the top-level data and key nested structures.",
     ]
     
-    # Enhanced expected output format for comprehensive reporting
+    # Simplified expected output focusing on the essentials
     expected_output = """
-# Comprehensive Financial Analysis Report
+# Excel Generation Script Output
 
-## Executive Summary
-- 3-5 key findings from the data analysis
-- Overall financial health assessment
-- Critical insights and recommendations
+## Script Execution
+- Status: (Success/Failure)
+- Generated File Path: (Absolute path to .xlsx file, if successful)
+- Error Message: (If any errors occurred)
 
-## Data Processing Overview
-- Complete data inventory (every field processed)
-- Currency conversion details with current rates
-- Data validation and quality checks performed
-- File generation status with enhancement details
+## Excel File Summary
+- Sheets Created: (List of sheet names)
+- Brief description of content in each sheet.
 
-## Visual Elements Created
-- Charts generated (types, purpose, key insights)
-- Table formatting applied (colors, styling details)
-- Conditional formatting rules implemented
-- Dashboard elements and KPIs highlighted
-
-## Analytical Insights
-- Trend analysis and patterns identified
-- Performance metrics and benchmarks
-- Risk factors and opportunities
-- Comparative analysis across segments/regions
-
-## Technical Implementation
-- Script execution results and any challenges overcome
-- Libraries used and formatting techniques applied
-- File locations and sheet organization
-- Quality assurance measures taken
-
-## Narrative Analysis
-- Story told by the data
-- Strategic implications and recommendations
-- Areas requiring attention or further investigation
-- Performance highlights and concerns
-
-## Final Deliverable
-- Complete Excel file path with all enhancements
-- Sheet-by-sheet summary of contents
-- Total data points processed and visualized
-- Completeness verification (no data left behind)
+## Notes
+- Any simplifications made for speed.
+- Any parts of the JSON data that were particularly complex or omitted for brevity.
     """.strip()
-    # --- END OF OPTIMIZED INSTRUCTIONS ---
+    # --- END OF SIMPLIFIED INSTRUCTIONS ---
     
     # Environment and monitoring configuration
     development_mode = settings.DEVELOPMENT_MODE
@@ -218,65 +158,57 @@ def create_agno_agent(model: str, temp_dir: str) -> Agent:
     
     # Ensure database file has write permissions
     if db_path.exists():
-        db_path.chmod(0o644)
+        db_path.chmod(0o644) # Read/write for owner, read for group/others
     
     # Create the agent with optimized tools and storage
-    # According to docs, Agno agents are very lightweight (~3.75 KiB) and fast to instantiate (~2μs)
-    # 
-    # Tool optimization strategy:
-    # - PythonTools: Directory isolation, security settings, selective feature enabling
-    # - GoogleSearchTools: Result limiting, timeout management, conditional caching
-    # - Performance: Tool call limits, custom headers, language optimization
-    #
-    # Storage strategy:
-    # - Session persistence for conversation continuity across requests
-    # - Simple chat history for context (no complex user preference learning needed)
-    
-    agent = Agent(
-        model=Gemini(id=model, api_key=settings.GOOGLE_API_KEY),
-        tools=[
+    agent_config = {
+        "model": Gemini(id=model, api_key=settings.GOOGLE_API_KEY),
+        "tools": [
             PythonTools(
-                # Core execution settings (following official docs)
-                run_code=True, 
-                pip_install=True, 
-                save_and_run=True, 
-                read_files=True,
-                list_files=True,
-                run_files=True,                       # CRITICAL: Enable file running (was disabled!)
-                
-                # Directory and security configuration
-                base_dir=Path(temp_dir).absolute(),   # Enforce absolute path for directory isolation
-                
-                # Performance optimizations
-                safe_globals=None,                    # Can be configured for additional security
-                safe_locals=None,                     # Can be configured for additional security
+                run_code=True, pip_install=True, save_and_run=True,
+                read_files=True, list_files=True, run_files=True,
+                base_dir=Path(temp_dir).absolute(),
+                safe_globals=None, safe_locals=None,
             ),
             GoogleSearchTools(
-                # Performance optimization settings (according to Agno docs)
-                fixed_max_results=5,                  # Limit results to reduce processing time
-                timeout=10,                           # Set reasonable timeout for network calls
-                fixed_language="en",                  # Pre-set language to avoid detection overhead
-                headers={"User-Agent": "IntelliExtract-Agent/1.0"},  # Custom user agent
+                fixed_max_results=5, timeout=10, fixed_language="en",
+                headers={"User-Agent": "IntelliExtract-Agent/1.0"},
             )
         ],
-        storage=agent_storage,           # Re-enabled for session continuity and error recovery
-        add_history_to_messages=True,    # Enable for learning from previous attempts
-        num_history_runs=3,              # Allow some history for context
-        reasoning=False,                 # Disable reasoning mode to fix Gemini API compatibility issue
-        show_tool_calls=True,
-        markdown=True,                   # Enable markdown formatting for structured output
-        add_datetime_to_instructions=True,  # Include timestamp in markdown output
-        
-        # Tool performance optimization (following Agno documentation)
-        tool_call_limit=20,              # Sufficient for search + code generation + error fixing
-        # tool_choice="auto",            # Let model choose appropriate tools (default)
-        instructions=instructions,
-        expected_output=expected_output,  # Provide markdown structure template
-        exponential_backoff=True,        # Auto-retry with backoff on model errors
-        retries=5,                       # Number of retries for model calls
-        debug_mode=debug_enabled,        # Enable based on AGNO_DEBUG environment variable
-        monitoring=monitoring_enabled,   # Enable Agno.com monitoring based on AGNO_MONITOR environment variable
-    )
+        "storage": agent_storage,
+        "add_history_to_messages": True,
+        "num_history_runs": 3,
+        "reasoning": False, # Keep False for Gemini API compatibility
+        "show_tool_calls": True, # Good for debugging
+        "markdown": True,
+        "add_datetime_to_instructions": True,
+        "tool_call_limit": 20,
+        "instructions": instructions,
+        "expected_output": expected_output,
+        "exponential_backoff": True, # Agno handles retries for model calls
+        "retries": 5, # Number of retries for model calls by Agno
+        "debug_mode": debug_enabled,
+        "monitoring": monitoring_enabled,
+    }
+
+    # Add cancellation token if job_manager and job_id are present
+    # This requires Agno Agent to support a cancellation_token or similar mechanism.
+    # Assuming Agno Agent might have a `cancellation_callback` or `is_cancelled_func`
+    # If not, this part needs to be adapted based on how Agno handles cancellations.
+    # For now, this is a conceptual addition.
+    # if job_manager and job_id:
+    #     job = await job_manager.get_job(job_id) # This needs to be async call if job_manager is async
+    #     if job and job.cancellation_token:
+    #         # This is hypothetical. Agno might need a specific way to integrate this.
+    #         # Option 1: Pass a callback
+    #         # agent_config["is_cancelled_callback"] = job.cancellation_token.is_set
+    #         # Option 2: If Agent supports an asyncio.Event directly (less likely for sync agent)
+    #         # agent_config["cancellation_event"] = job.cancellation_token
+    #         pass
+
+
+    agent = Agent(**agent_config)
+
     # Log monitoring configuration for transparency
     if monitoring_enabled:
         if settings.AGNO_API_KEY:
@@ -294,10 +226,19 @@ def create_agno_agent(model: str, temp_dir: str) -> Agent:
     # Store agent in pool for cross-request reuse with size management
     if len(AGENT_POOL) >= MAX_POOL_SIZE:
         # Remove oldest agent (simple FIFO strategy)
-        oldest_key = next(iter(AGENT_POOL))
-        del AGENT_POOL[oldest_key]
-        logger.info(f"Removed oldest agent from pool: {oldest_key}")
-    
+        # This should be thread-safe if AGENT_POOL is accessed by multiple threads from to_thread
+        # Consider using a lock for AGENT_POOL modifications if concurrency issues arise.
+        # For now, assuming GIL provides sufficient protection for this simple dict operation.
+        try:
+            oldest_key = next(iter(AGENT_POOL)) # This could be problematic if dict is modified during iteration
+            del AGENT_POOL[oldest_key]
+            logger.info(f"Removed oldest agent from pool: {oldest_key}")
+        except StopIteration: # AGENT_POOL was empty
+            pass
+        except RuntimeError: # Dictionary changed size during iteration
+            logger.warning("Agent pool changed size during cleanup, skipping removal this time.")
+            pass
+
     AGENT_POOL[agent_key] = agent
     logger.info(f"Agent pool updated (size: {len(AGENT_POOL)})")
     return agent
@@ -305,12 +246,16 @@ def create_agno_agent(model: str, temp_dir: str) -> Agent:
 async def direct_json_to_excel_async(json_data: str, file_name: str, chunk_size: int, temp_dir: str) -> Tuple[str, str, str]:
     """Async version of direct_json_to_excel for better performance."""
     # Run the synchronous function in a thread pool to make it non-blocking
+    # This is suitable if direct_json_to_excel is CPU-bound or blocking I/O not easily made async.
+    # If it's I/O bound and can be made async, an async version would be better.
     return await asyncio.to_thread(direct_json_to_excel, json_data, file_name, chunk_size, temp_dir)
 
-def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_dir: str) -> Tuple[str, str, str]:
+
+def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_dir: str, job_id: Optional[str] = None, job_manager: Optional[Any] = None) -> Tuple[str, str, str]:
     """
     Convert JSON data directly to Excel with automatic retry mechanism.
     Will retry up to 3 times with different approaches on each retry.
+    Optionally updates job progress if job_id and job_manager are provided.
     """
     max_retries = 3
     retry_count = 0
@@ -458,162 +403,118 @@ def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_d
 
 async def convert_with_agno_async(json_data: str, file_name: str, description: str, model: str, temp_dir: str, user_id: str = None, session_id: str = None) -> tuple[str, str]:
     """Async version of convert_with_agno for better performance."""
-    # Run the synchronous function in a thread pool to make it non-blocking
-    return await asyncio.to_thread(convert_with_agno, json_data, file_name, description, model, temp_dir, user_id, session_id)
+    # Run the synchronous function in a thread pool to make it non-blocking.
+    # Similar to direct_json_to_excel_async, if convert_with_agno involves significant CPU-bound work
+    # or blocking I/O that's hard to make async directly, this is a reasonable approach.
+    # For Agno agent calls that might be I/O bound (network requests to an AI service),
+    # an async version of the Agno client/agent interaction would be ideal if available.
+    return await asyncio.to_thread(convert_with_agno, json_data, file_name, description, model, temp_dir, user_id, session_id, job_id, job_manager)
 
-def convert_with_agno(json_data: str, file_name: str, description: str, model: str, temp_dir: str, user_id: str = None, session_id: str = None) -> tuple[str, str]:
+def convert_with_agno(
+    json_data: str,
+    file_name: str,
+    description: str,
+    model: str,
+    temp_dir: str,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    job_id: Optional[str] = None,      # For job progress updates
+    job_manager: Optional[Any] = None  # For job progress updates
+) -> tuple[str, str]:
     """
     Convert JSON data to Excel using Agno AI with streamlined processing.
     Will retry up to 2 times for faster processing.
     Returns tuple of (response_content, actual_session_id) for session continuity.
+    Optionally updates job progress if job_id and job_manager are provided.
     """
     import uuid
-    
+    from .job_manager import JobStatus # Local import for JobStatus if needed by job_manager methods
+
     # Get debug setting from configuration
     debug_enabled = settings.AGNO_DEBUG
     
     # Generate session IDs if not provided (allow continuity for error recovery)
-    if not user_id:
-        user_id = f"user_{uuid.uuid4().hex[:8]}"
-    if not session_id:
-        session_id = f"session_{uuid.uuid4().hex[:8]}"
+    current_user_id = user_id or f"user_{uuid.uuid4().hex[:8]}"
+    current_session_id = session_id or f"session_{uuid.uuid4().hex[:8]}"
     
     # Validate input prompt to prevent empty content
     if not json_data or not json_data.strip():
+        # Update job status to FAILED if job_manager is available
+        if job_manager and job_id:
+            asyncio.run(job_manager.update_job_status(job_id, JobStatus.FAILED, current_step="Input validation failed", result={"error": "Empty JSON data provided"}))
         raise ValueError("Empty JSON data provided - cannot process")
     
     max_retries = 2  # Reduced for faster processing
     retry_count = 0
     last_error = None
     
+    # Initial progress update
+    if job_manager and job_id:
+        asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING, progress=0.05, current_step="Initializing Agno agent"))
+
     while retry_count < max_retries:
         try:
-            agent = create_agno_agent(model, temp_dir)
+            # Check for cancellation before starting/retrying
+            if job_manager and job_id:
+                job = asyncio.run(job_manager.get_job(job_id)) # This is sync context, need to run async code
+                if job and job.cancellation_token and job.cancellation_token.is_set():
+                    logger.info(f"Job {job_id} cancelled before Agno processing attempt {retry_count + 1}.")
+                    asyncio.run(job_manager.update_job_status(job_id, JobStatus.CANCELLED, current_step="Cancelled by user before processing"))
+                    # This function is synchronous, so we can't directly return an async response.
+                    # The job status is updated. The caller (worker) should handle this.
+                    # We might return a specific value or raise a custom exception.
+                    return "Job cancelled", current_session_id
+
+
+            agent = create_agno_agent(model, temp_dir) # temp_dir should be specific to this job
             
-            # Create a focused prompt with currency conversion requirements
-            # Note: JSON data is truncated in logs for privacy/readability
+            if job_manager and job_id:
+                asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING, progress=0.1, current_step=f"Agent created (attempt {retry_count + 1})"))
+
             json_preview = json_data[:200] + "..." if len(json_data) > 200 else json_data
             
-            # Validate prompt content before creating
-            if not file_name or not file_name.strip():
-                raise ValueError("Empty file_name provided")
-            if not temp_dir or not temp_dir.strip():
-                raise ValueError("Empty temp_dir provided")
+            if not file_name or not file_name.strip(): raise ValueError("Empty file_name provided")
+            if not temp_dir or not temp_dir.strip(): raise ValueError("Empty temp_dir provided")
             
             prompt = f"""
             Create an Excel report from this financial data. Follow your instructions exactly.
-            
-            Base filename: {file_name}
-            Data source: {description}
-            
+            Base filename: {file_name}, Data source: {description}
             REMEMBER: 
-            1. Change directory to {temp_dir} FIRST in your script
-            2. Detect the currency in the financial data
-            3. Use the google_search function to find current USD exchange rates
-            4. Create columns for both original currency AND USD values
-            5. Print the absolute file path when done
-            6. Keep the analysis simple but include currency conversion
-            7. Use openpyxl library for Excel creation
+            1. Change directory to {temp_dir} FIRST. 2. Detect currency. 3. Use google_search for USD rates.
+            4. Create columns for original currency AND USD. 5. Print absolute file path.
+            6. Simple analysis with currency conversion. 7. Use openpyxl.
+            WORKING DIRECTORY: {temp_dir}. All files in this directory, relative paths.
+            GOOGLE SEARCH: google_search(query, max_results=5, language="en") -> JSON string. Ex: google_search("USD to EUR rate")
+            JSON Data: {json_data}"""
             
-            **WORKING DIRECTORY:** {temp_dir}
-            **IMPORTANT:** All files must be created in the working directory above. Use relative paths only.
+            if not prompt or not prompt.strip(): raise ValueError("Generated prompt is empty")
             
-            **GOOGLE SEARCH USAGE:** You have access to google_search(query, max_results=5, language="en") function
-            Example: google_search("USD to EUR exchange rate today", max_results=3)
+            if debug_enabled: logger.info(f"AI PROMPT: Dir={temp_dir}, File={file_name}, Desc={description}, JSON Size={len(json_data)}, Preview={json_preview}")
             
-            JSON Data:
-            {json_data}
-            """
-            
-            # Final validation of the complete prompt
-            if not prompt or not prompt.strip():
-                raise ValueError("Generated prompt is empty")
-            
-            # Log clean debug info (without full JSON data)
-            if debug_enabled:
-                logger.info(f"🤖 AI PROMPT SUMMARY:")
-                logger.info(f"   📁 Working Directory: {temp_dir}")
-                logger.info(f"   📄 File Name: {file_name}")
-                logger.info(f"   📝 Description: {description}")
-                logger.info(f"   📊 JSON Data Size: {len(json_data)} characters")
-                logger.info(f"   🔍 JSON Preview: {json_preview}")
-                logger.info(f"   🎯 Task: Financial Excel report with currency conversion")
-            
-            # Using run method with enhanced streaming and real-time monitoring
             logger.info(f"Starting Agno agent processing (attempt {retry_count + 1}/{max_retries})...")
+            if job_manager and job_id:
+                asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING, progress=0.2, current_step=f"Sending prompt to AI (attempt {retry_count + 1})"))
+
+            response = agent.run(
+                prompt, stream=False, show_tool_calls=True, markdown=True,
+                user_id=current_user_id, session_id=current_session_id
+            )
             
-            try:
-                # Use non-streaming mode to get a proper response object
-                response = agent.run(
-                    prompt,
-                    stream=False,                    # Disable streaming to get response object with .content
-                    show_tool_calls=True,            # Enable to see tool execution for debugging
-                    markdown=True,                   # Ensure markdown formatting consistency
-                    user_id=user_id,                 # Restore for session continuity and error recovery
-                    session_id=session_id            # Restore for conversation continuity
-                )
-                
-                # Validate response content to prevent empty responses
-                if not hasattr(response, 'content') or not response.content:
-                    logger.warning("Agent returned empty response - this could cause 400 errors")
-                    if hasattr(response, 'content'):
-                        logger.warning(f"Response content: '{response.content}'")
-                    raise ValueError("Agent returned empty response content")
-                
-            except Exception as agent_error:
-                error_msg = str(agent_error)
-                logger.error(f"Agent.run() failed: {type(agent_error).__name__}: {agent_error}")
-                
-                # Special handling for the specific 400 error we're troubleshooting
-                if "contents.parts must not be empty" in error_msg:
-                    logger.error("❌ DETECTED TARGET ERROR: Empty content parts in Gemini request")
-                    logger.error("This is likely caused by message history accumulation or empty tool responses")
-                    
-                    # Clear session history to prevent recurrence
-                    try:
-                        if hasattr(agent, 'storage') and agent.storage:
-                            logger.info("Attempting to clear problematic session history...")
-                            # Note: This is a temporary mitigation - real fix is in agent configuration
-                    except Exception as clear_error:
-                        logger.warning(f"Could not clear session history: {clear_error}")
-                
-                # Re-raise to be handled by outer retry logic with enhanced error categorization
-                raise
+            if not hasattr(response, 'content') or not response.content:
+                logger.warning(f"Agent returned empty response. Content: '{getattr(response, 'content', None)}'")
+                raise ValueError("Agent returned empty response content")
+
+            if job_manager and job_id:
+                 progress_after_run = 0.8 # Assuming most work is done if run succeeds
+                 asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING, progress=progress_after_run, current_step="AI processing complete, finalizing"))
             
-            logger.info(f"Agno agent completed processing successfully")
-            
-            # Enhanced debug logging for AI response analysis
+            logger.info(f"Agno agent completed processing successfully.")
             if debug_enabled:
-                logger.info(f"🧠 AI RESPONSE ANALYSIS:")
-                
-                # Log reasoning steps
-                if hasattr(response, 'reasoning') and response.reasoning:
-                    logger.info(f"   🤔 Reasoning Steps: {len(response.reasoning)} steps captured")
-                    for i, step in enumerate(response.reasoning[:3]):  # Show first 3 steps
-                        step_preview = str(step)[:150] + "..." if len(str(step)) > 150 else str(step)
-                        logger.info(f"   💭 Step {i+1}: {step_preview}")
-                
-                # Log tool calls
-                if hasattr(response, 'tool_calls') and response.tool_calls:
-                    logger.info(f"   🔧 Tool Calls: {len(response.tool_calls)} executed")
-                    for i, tool_call in enumerate(response.tool_calls):
-                        tool_name = getattr(tool_call, 'name', 'Unknown Tool')
-                        logger.info(f"   🛠️  Tool {i+1}: {tool_name}")
-                
-                # Log response content summary (not full content)
-                content_preview = response.content[:300] + "..." if len(response.content) > 300 else response.content
-                logger.info(f"   📄 Response Length: {len(response.content)} characters")
-                logger.info(f"   📋 Response Preview: {content_preview}")
-            else:
-                # Basic logging when debug is off
-                if hasattr(response, 'reasoning') and response.reasoning:
-                    logger.info(f"Agent reasoning steps captured: {len(response.reasoning)} steps")
-                if hasattr(response, 'tool_calls') and response.tool_calls:
-                    logger.info(f"Tool calls executed: {len(response.tool_calls)} calls")
+                reason_steps = len(response.reasoning) if hasattr(response, 'reasoning') else 0
+                tool_calls_count = len(response.tool_calls) if hasattr(response, 'tool_calls') else 0
+                logger.info(f"AI RESPONSE: Reasoning Steps={reason_steps}, Tool Calls={tool_calls_count}, Response Length={len(response.content)}")
             
-            # Return both response content and session_id for continuity
-            logger.info(f"Session management: user_id={user_id}, session_id={session_id}")
-            return response.content, session_id
+            return response.content, current_session_id
             
         except Exception as e:
             retry_count += 1
@@ -621,158 +522,169 @@ def convert_with_agno(json_data: str, file_name: str, description: str, model: s
             error_details = traceback.format_exc()
             error_type = type(e).__name__
             
-            # Enhanced error logging with categorization
-            logger.error(f"Agno AI processing failed (attempt {retry_count}/{max_retries})")
-            logger.error(f"Error type: {error_type}")
-            logger.error(f"Error message: {e}")
-            logger.error(f"Full traceback:\n{error_details}")
+            logger.error(f"Agno AI processing failed (attempt {retry_count}/{max_retries}): {error_type}: {e}\n{error_details}")
+
+            if job_manager and job_id:
+                # Update progress with error for this attempt
+                asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING,
+                                                          current_step=f"Attempt {retry_count} failed: {error_type}",
+                                                          result={"error_attempt_{retry_count}": str(e)}))
             
-            # Categorize errors for better handling
-            is_retryable = True
-            if "API" in str(e) or "rate limit" in str(e).lower():
-                logger.warning("API-related error detected - likely handled by Agno's exponential backoff")
-            elif "memory" in str(e).lower() or "timeout" in str(e).lower():
-                logger.warning("Resource-related error detected - may benefit from retry")
-            elif "authentication" in str(e).lower() or "unauthorized" in str(e).lower():
-                logger.error("Authentication error detected - retries likely won't help")
-                is_retryable = False
-            elif "400" in str(e) or "Bad Request" in str(e):
-                logger.error("Bad request error - removing agent from pool")
-                # Remove the faulty agent from pool to force recreation
+            is_retryable = not ("authentication" in str(e).lower() or "unauthorized" in str(e).lower())
+            if "400" in str(e) or "Bad Request" in str(e): # Potentially remove agent from pool
                 agent_key = f"agent_{model}"
-                if agent_key in AGENT_POOL:
-                    del AGENT_POOL[agent_key]
-                    logger.info(f"Removed faulty agent from pool: {agent_key}")
+                if agent_key in AGENT_POOL: del AGENT_POOL[agent_key]; logger.info(f"Removed faulty agent {agent_key} from pool.")
             
-            if retry_count >= max_retries:
-                logger.error(f"All {max_retries} attempts failed. Final error type: {error_type}")
-                logger.error(f"Final error message: {last_error}")
-                # Clean up agent from pool on final failure
-                agent_key = f"agent_{model}"
-                if agent_key in AGENT_POOL:
-                    del AGENT_POOL[agent_key]
-                    logger.info(f"Removed agent from pool after final failure: {agent_key}")
-                raise
+            if retry_count >= max_retries or not is_retryable:
+                logger.error(f"Final attempt failed or error not retryable. Error: {last_error}")
+                if job_manager and job_id:
+                    asyncio.run(job_manager.update_job_status(job_id, JobStatus.FAILED, current_step=f"Fatal error after {retry_count} attempts", result={"error": last_error, "details": error_details}))
+                agent_key = f"agent_{model}";
+                if agent_key in AGENT_POOL: del AGENT_POOL[agent_key]; logger.info(f"Removed agent {agent_key} from pool after final failure.")
+                raise # Re-raise the last exception
             
-            if not is_retryable:
-                logger.error("Error is not retryable - failing immediately")
-                # Clean up agent from pool on non-retryable error
-                agent_key = f"agent_{model}"
-                if agent_key in AGENT_POOL:
-                    del AGENT_POOL[agent_key]
-                    logger.info(f"Removed agent from pool due to non-retryable error: {agent_key}")
-                raise
-            
-            # Exponential backoff at application level (in addition to Agno's built-in backoff)
-            delay = min(retry_count * 2, 10)  # Cap delay at 10 seconds
-            logger.info(f"Retrying conversion in {delay} seconds (attempt {retry_count+1}/{max_retries})...")
+            delay = min(retry_count * 2, 10)
+            logger.info(f"Retrying Agno conversion in {delay}s (attempt {retry_count+1}/{max_retries})...")
+            if job_manager and job_id: # Update before sleep
+                 asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING, current_step=f"Retrying in {delay}s after error: {error_type}"))
             time.sleep(delay)
 
-def find_newest_file(directory: str, files_before: set) -> Optional[str]:
-    """Find the newest Excel file in directory with improved reliability."""
-    # Check both the main directory and subdirectories for Excel files
-    patterns = [
-        os.path.join(directory, "*.xlsx"),
-        os.path.join(directory, "**", "*.xlsx"),  # Recursive search
-    ]
+def find_newest_file(directory: str, files_before: set, job_id: Optional[str] = None, job_manager: Optional[Any] = None) -> Optional[str]:
+    """
+    Find the newest Excel file in directory with improved reliability.
+    Optionally updates job progress if job_id and job_manager are provided.
+    """
+    from .job_manager import JobStatus # Local import
+
+    # Use a helper for job updates to avoid repeating asyncio.run - only if job_manager and job_id are present
+    async def _update_job_if_present(progress_val: Optional[float] = None, current_step_val: Optional[str] = None, status_val: Optional[JobStatus] = None, result_val: Optional[dict]=None):
+        if job_manager and job_id:
+            # This service function might be called from a sync or async context.
+            # If called from sync (like current to_thread), asyncio.run is okay.
+            # If called from async, it should be `await job_manager.update_job_status(...)`
+            # For now, assuming it's run in a thread, so asyncio.run is used.
+            # This is a common challenge when mixing sync/async code.
+    # A better long-term solution is to make the service functions fully async.
+            try:
+        # Simplified approach for now: always use asyncio.run.
+        # This assumes this helper is always called from a synchronous context (e.g., inside a function run by to_thread).
+        # If the surrounding function `find_newest_file` itself becomes async, this needs to change to `await`.
+        current_job = asyncio.run(job_manager.get_job(job_id))
+        if current_job:
+             asyncio.run(job_manager.update_job_status(job_id,
+                                status=status_val or current_job.status,
+                                progress=progress_val if progress_val is not None else current_job.progress,
+                                current_step=current_step_val if current_step_val is not None else current_job.current_step,
+                                result=result_val))
+            except Exception as e_update:
+                logger.error(f"Error updating job {job_id} status in find_newest_file: {e_update}")
+
+    asyncio.run(_update_job_if_present(current_step_val="Searching for output file", progress_val=0.85))
+
+    patterns = [os.path.join(directory, "*.xlsx"), os.path.join(directory, "**", "*.xlsx")]
+    max_attempts, attempt_delay = 10, 0.3
     
-    # Improved file detection with multiple attempts
-    max_attempts = 5
-    attempt_delay = 0.5  # Start with 500ms
-    
+    files_after = set()
+    new_files = set()
+
     for attempt in range(max_attempts):
-        if attempt > 0:
-            time.sleep(attempt_delay)
-            attempt_delay *= 1.5  # Exponential backoff
+        if attempt > 0: time.sleep(attempt_delay); attempt_delay *= 1.2
         
-        files_after = set()
-        for pattern in patterns:
-            files_after.update(glob.glob(pattern, recursive=True))
-        
+        current_files_after = set()
+        for pattern in patterns: current_files_after.update(glob.glob(pattern, recursive=True))
+        files_after.update(current_files_after)
         new_files = files_after - files_before
-        if new_files:
-            # Found new files, proceed
-            logger.info(f"File detection succeeded on attempt {attempt + 1}")
-            break
         
-        logger.info(f"File detection attempt {attempt + 1}/{max_attempts} - no new files yet")
-    
-    logger.info(f"=== FILE DETECTION DEBUG ===")
-    logger.info(f"Directory being searched: {directory}")
-    logger.info(f"Directory exists: {os.path.exists(directory)}")
-    logger.info(f"Search patterns: {patterns}")
-    logger.info(f"Files before: {len(files_before)} - {list(files_before)}")
-    logger.info(f"Files after: {len(files_after)} - {list(files_after)}")
-    
-    # Also check for all files in the directory for debugging
-    all_files = []
-    try:
-        for root, dirs, files in os.walk(directory):
-            for file in files:
-                full_path = os.path.join(root, file)
-                all_files.append(full_path)
-        logger.info(f"ALL files in directory tree: {all_files}")
-    except Exception as e:
-        logger.warning(f"Could not walk directory {directory}: {e}")
-    
-    # ALSO check current working directory as fallback
-    cwd = os.getcwd()
-    logger.info(f"Current working directory: {cwd}")
-    if cwd != directory:
-        logger.info(f"Checking for Excel files in CWD as fallback...")
-        cwd_xlsx_files = glob.glob(os.path.join(cwd, "*.xlsx"))
-        logger.info(f"Excel files found in CWD: {cwd_xlsx_files}")
-        
-        # If no files in temp dir but files in CWD, log this issue
-        if not files_after and cwd_xlsx_files:
-            logger.error(f"ERROR: Agent created files in wrong location! Files in CWD: {cwd_xlsx_files}")
-            logger.error(f"These should have been created in: {directory}")
-    
-    # Re-calculate new_files after all debug logging
-    new_files = files_after - files_before
-    logger.info(f"New files: {list(new_files)}")
-    logger.info(f"=== END FILE DETECTION DEBUG ===")
-    
+        if new_files: logger.info(f"File detection ok attempt {attempt+1}. New: {new_files}"); break
+        logger.info(f"File detection attempt {attempt+1}/{max_attempts} - no new files in {directory}")
+        asyncio.run(_update_job_if_present(progress_val=0.85 + (0.1 * (attempt + 1) / max_attempts)))
+
+    if settings.AGNO_DEBUG:
+        logger.info(f"FILE DEBUG: Dir={directory}, Exists={os.path.exists(directory)}, Patterns={patterns}")
+        logger.info(f"Files Before ({len(files_before)}): {list(files_before)}")
+        logger.info(f"Files After ({len(files_after)}): {list(files_after)}")
+        all_files_in_dir = [os.path.join(r,f) for r,ds,fs in os.walk(directory) for f in fs] if os.path.exists(directory) else []
+        logger.info(f"ALL files in dir tree ({len(all_files_in_dir)}): {all_files_in_dir}")
+        logger.info(f"New Files ({len(new_files)}): {list(new_files)}")
+
     if not new_files:
-        logger.warning(f"No new Excel files found in {directory} after {max_attempts} attempts")
+        logger.warning(f"No new Excel files in {directory} after {max_attempts} attempts.")
+        asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file not found", result_val={"error": "No output file generated."}))
         return None
     
-    # Wait a bit more to ensure file is fully written before checking modification time
     time.sleep(0.2)
     
     try:
-        newest_file = max(new_files, key=os.path.getmtime)
-        # Verify file is readable and has non-zero size
-        if os.path.getsize(newest_file) > 0:
-            logger.info(f"Newest file selected: {newest_file} (size: {os.path.getsize(newest_file)} bytes)")
-            return newest_file
-        else:
-            logger.warning(f"Newest file {newest_file} has zero size")
-            return None
+        def get_file_sort_key(f):
+            try: return (os.path.getmtime(f), os.path.getctime(f))
+            except OSError: return (0,0)
+
+        sorted_new_files = sorted(list(new_files), key=get_file_sort_key, reverse=True)
+
+        for potential_file in sorted_new_files:
+            try:
+                if os.path.exists(potential_file) and os.path.getsize(potential_file) > 0:
+                    logger.info(f"Newest file: {potential_file} (size: {os.path.getsize(potential_file)}B)")
+                    asyncio.run(_update_job_if_present(current_step_val="Output file found", progress_val=0.98))
+                    return potential_file
+                else: logger.warning(f"Candidate {potential_file} zero size or gone. Checking next.")
+            except OSError as e_size: logger.warning(f"Error accessing candidate {potential_file} for size: {e_size}")
+
+        logger.warning(f"All {len(new_files)} new file(s) were empty or inaccessible.")
+        asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file empty/inaccessible", result_val={"error": "Generated file empty."}))
+        return None
+
     except Exception as e:
-        logger.error(f"Error accessing newest file: {e}")
+        logger.error(f"Error selecting/accessing newest file: {e}")
+        asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Error accessing output file", result_val={"error": str(e)}))
         return None
 
 # Cleanup function to manage the agent pool and storage
 def cleanup_agent_pool():
     """Remove agents from the pool to free up memory."""
     global AGENT_POOL
+    # Add lock if AGENT_POOL operations become complex or concurrent access is an issue
     logger.info(f"Cleaning up agent pool with {len(AGENT_POOL)} agents")
     AGENT_POOL.clear()
 
-def cleanup_storage_files():
-    """Clean up old storage files to prevent disk space issues."""
+def cleanup_storage_files(max_age_hours: int = 1):
+    """Clean up old storage files (e.g., .db files for Agno) to prevent disk space issues."""
     import glob
     import time
-    storage_dir = Path("storage")
-    if storage_dir.exists():
-        # Remove storage files older than 1 hour
-        cutoff_time = time.time() - 3600  # 1 hour
-        for db_file in glob.glob(str(storage_dir / "agents_*.db")):
-            if os.path.getmtime(db_file) < cutoff_time:
-                try:
-                    os.remove(db_file)
-                    logger.debug(f"Cleaned up old storage file: {db_file}")
-                except OSError as e:
-                    logger.warning(f"Failed to remove old storage file {db_file}: {e}")
+    storage_dir = Path(getattr(settings, 'AGNO_STORAGE_DIR', 'storage')) # Use configurable path
+    storage_dir.mkdir(exist_ok=True) # Ensure it exists
+
+    cutoff_time = time.time() - (max_age_hours * 3600)
+    # Example pattern, adjust if Agno uses a different naming scheme or location
+    file_pattern = str(storage_dir / "agents_*.db")
+
+    cleaned_count = 0
+    failed_count = 0
+
+    for db_file_path_str in glob.glob(file_pattern):
+        db_file_path = Path(db_file_path_str)
+        try:
+            if db_file_path.stat().st_mtime < cutoff_time:
+                db_file_path.unlink() # Remove file
+                logger.debug(f"Cleaned up old storage file: {db_file_path}")
+                cleaned_count +=1
+        except OSError as e:
+            logger.warning(f"Failed to remove old storage file {db_file_path}: {e}")
+            failed_count +=1
+
+    if cleaned_count > 0 or failed_count > 0:
+        logger.info(f"Storage cleanup: {cleaned_count} files removed, {failed_count} failures for pattern '{file_pattern}'.")
+
+def json_serialize_job_result(result: Any) -> Any:
+    """Helper to ensure job results are JSON serializable for SSE/WebSocket."""
+    if result is None:
+        return None
+    if isinstance(result, (str, int, float, bool, list, dict)):
+        # Attempt to serialize complex dicts/lists, but handle failures
+        try:
+            json.dumps(result) # Test serialization
+            return result
+        except (TypeError, OverflowError):
+            return f"Non-serializable data of type {type(result).__name__}"
+    return str(result) # Fallback for other types
 

@@ -28,10 +28,27 @@ class Settings(BaseSettings):
     # Performance & Security Settings
     MAX_FILE_SIZE_MB: int = 100  # Maximum file size in MB
     MAX_JSON_SIZE_MB: int = 50   # Maximum JSON payload size in MB
-    REQUEST_TIMEOUT_SECONDS: int = 1200  # 20 minutes
+    REQUEST_TIMEOUT_SECONDS: int = 2700  # 45 minutes (increased from 20 min)
     CLEANUP_DELAY_SECONDS: int = 300  # 5 minutes delay before cleanup
     MAX_POOL_SIZE: int = 10  # Maximum number of agents in pool
+
+    # Per-job type timeout configuration (example)
+    # This could be a simple dict or parsed from a JSON string in env
+    JOB_TYPE_TIMEOUTS: dict = {
+        "default": 2700,  # Default job timeout: 45 minutes
+        "document_conversion": 3000, # Specific timeout for this job type
+        "data_analysis_report": 3600, # 1 hour
+        "quick_task": 300 # 5 minutes for short tasks
+    }
     AGENT_STORAGE_CLEANUP_HOURS: int = 24  # Clean up agent storage after 24 hours
+    ABANDONED_JOB_TIMEOUT_SECONDS: int = 60 # Timeout for auto-cancelling jobs with no WebSocket connections
+
+    # Job Worker Configuration
+    JOB_WORKERS: int = os.getenv("JOB_WORKERS", 2)
+
+    # SSE/WebSocket Configuration
+    SSE_TIMEOUT_SECONDS: int = 30 # How long SSE connection waits for message before sending keepalive
+    WEBSOCKET_KEEP_ALIVE_TIMEOUT_SECONDS: int = 60 # Timeout for WebSocket receive to check connection
     
     @validator('GOOGLE_API_KEY')
     def validate_google_api_key(cls, v):
