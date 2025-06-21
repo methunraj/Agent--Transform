@@ -1,10 +1,12 @@
 # app/services.py
 import os
+import shutil # Added for disk usage check
 import json
 import uuid
 import time
 import glob
 import logging
+import tempfile # Added for fallback in disk space check
 import pandas as pd
 from pathlib import Path
 import asyncio
@@ -28,6 +30,35 @@ logger = logging.getLogger(__name__)
 # Set up Agno monitoring environment variables if configured
 if settings.AGNO_API_KEY:
     os.environ["AGNO_API_KEY"] = settings.AGNO_API_KEY
+# --- Disk Space Check Configuration & Helper ---
+MIN_FREE_SPACE_BYTES = settings.MIN_DISK_SPACE_MB * 1024 * 1024 if hasattr(settings, 'MIN_DISK_SPACE_MB') and settings.MIN_DISK_SPACE_MB > 0 else 50 * 1024 * 1024  # Default 50MB
+
+def _has_sufficient_disk_space(path: str, required_bytes: int) -> bool:
+    """Checks if the specified path has at least required_bytes of free disk space."""
+    try:
+        # Ensure the path (or its parent for a file path) exists for disk_usage
+        check_path = path
+        if not os.path.exists(check_path):
+            check_path = os.path.dirname(check_path)
+            if not os.path.exists(check_path): # If parent also doesn't exist, tempfile.gettempdir() as last resort
+                check_path = Path(tempfile.gettempdir())
+                logger.warning(f"Path {path} and its parent do not exist. Checking disk space for system temp {check_path}.")
+
+        total, used, free = shutil.disk_usage(check_path)
+        logger.debug(f"Disk usage for partition of {check_path}: Total={total // (1024*1024)}MB, Used={used // (1024*1024)}MB, Free={free // (1024*1024)}MB. Required free: {required_bytes // (1024*1024)}MB")
+        if free < required_bytes:
+            logger.warning(f"Insufficient disk space. Free: {free // (1024*1024)}MB, Required: {required_bytes // (1024*1024)}MB for path based on {check_path}")
+            return False
+        return True
+    except FileNotFoundError:
+        logger.error(f"Path not found for disk space check: {path}. Cannot determine disk space.")
+        return False # Fail safe if path doesn't exist for check
+    except Exception as e:
+        logger.error(f"Could not check disk space for {path} (checking on {check_path if 'check_path' in locals() else path}): {e}", exc_info=True)
+        return False # Fail safe: if we can't check, assume not enough space
+
+
+# --- Agent Pool & Creation ---
 if settings.AGNO_MONITOR:
     os.environ["AGNO_MONITOR"] = "true"
 if settings.AGNO_DEBUG:
@@ -307,9 +338,30 @@ def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_d
             data = data_objects[0] if len(data_objects) == 1 else data_objects
 
             file_id = str(uuid.uuid4())
-            safe_filename = "".join(c for c in file_name if c.isalnum() or c in (' ', '-', '_')).strip()
+            # Sanitize file_name to prevent path traversal
+            base_name = os.path.basename(file_name)
+            safe_filename = "".join(c for c in base_name if c.isalnum() or c in (' ', '-', '_')).strip()
+            # Ensure safe_filename is not empty after sanitization, provide a default if it is.
+            if not safe_filename:
+                safe_filename = "default_excel_file"
+
             xlsx_filename = f"{safe_filename}_direct_chunked.xlsx" if isinstance(data, list) and len(data) > chunk_size else f"{safe_filename}_direct.xlsx"
             file_path = os.path.join(temp_dir, f"{file_id}_{xlsx_filename}")
+
+            # Further security: Ensure the temp_dir is a legitimate, controlled directory
+            # and that the resolved file_path is within this directory.
+            # This is implicitly handled by os.path.join if temp_dir is absolute and controlled,
+            # but an explicit check can be added if needed:
+            # if not Path(file_path).resolve().is_relative_to(Path(temp_dir).resolve()):
+            #     raise SecurityException("Resolved file path is outside of the designated temporary directory.")
+
+            # Check for sufficient disk space before attempting to write the file
+            if not _has_sufficient_disk_space(temp_dir, MIN_FREE_SPACE_BYTES):
+                error_msg = f"Insufficient disk space in {temp_dir}. Requires at least {MIN_FREE_SPACE_BYTES // (1024*1024)}MB free."
+                logger.error(error_msg)
+                # Update job status if applicable
+                asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Disk space check failed", result_val={"error": error_msg}))
+                raise IOError(error_msg) # Raise an IOError or a custom exception
 
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
                 sheets_created = False
@@ -455,6 +507,14 @@ def convert_with_agno(
     # Initial progress update
     if job_manager and job_id:
         asyncio.run(job_manager.update_job_status(job_id, JobStatus.PROCESSING, progress=0.05, current_step="Initializing Agno agent"))
+
+    # Check for sufficient disk space before starting any processing that might create files
+    if not _has_sufficient_disk_space(temp_dir, MIN_FREE_SPACE_BYTES):
+        error_msg = f"Insufficient disk space in {temp_dir} for Agno agent. Requires at least {MIN_FREE_SPACE_BYTES // (1024*1024)}MB free."
+        logger.error(error_msg)
+        if job_manager and job_id:
+            asyncio.run(job_manager.update_job_status(job_id, JobStatus.FAILED, current_step="Disk space check failed for Agno", result={"error": error_msg}))
+        raise IOError(error_msg)
 
     while retry_count < max_retries:
         try:

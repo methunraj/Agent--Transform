@@ -59,15 +59,25 @@ class Settings(BaseSettings):
     REDIS_JOB_KEY_PREFIX: str = "intelliextract_job:"
     REDIS_JOB_TTL_SECONDS: int = 24 * 3600  # 24 hours
 
+    # Disk Space Monitoring
+    MIN_DISK_SPACE_MB: int = int(os.getenv("MIN_DISK_SPACE_MB", "50")) # Minimum free disk space in MB required
+
     # API Key Validation Setting
     SKIP_API_KEY_VALIDATION_ON_STARTUP: bool = os.getenv("SKIP_API_KEY_VALIDATION_ON_STARTUP", "false").lower() == "true"
     
-    @validator('GOOGLE_API_KEY')
-    def validate_google_api_key(cls, v):
-        if not v:
-            logger.warning("GOOGLE_API_KEY is not set. AI processing will fail.")
+    @validator('GOOGLE_API_KEY', pre=True, always=True)
+    def validate_google_api_key(cls, v, values):
+        skip_validation = values.get('SKIP_API_KEY_VALIDATION_ON_STARTUP', False)
+        if not v or v.isspace():
+            if not skip_validation:
+                raise ValueError("GOOGLE_API_KEY must be set and not be empty or whitespace.")
+            logger.warning("GOOGLE_API_KEY is not set or is whitespace. AI processing will likely fail.")
         elif len(v) < 20:  # Basic length check
-            logger.warning("GOOGLE_API_KEY appears to be invalid (too short).")
+            if not skip_validation:
+                # Allowing short keys if validation is skipped, but still warn
+                logger.warning("GOOGLE_API_KEY appears to be invalid (too short), but validation is skipped.")
+            else:
+                logger.warning("GOOGLE_API_KEY appears to be invalid (too short).")
         return v
     
     @validator('AGNO_API_KEY')
@@ -82,8 +92,5 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Validate critical settings on startup
-if not settings.GOOGLE_API_KEY:
-    logger.critical("GOOGLE_API_KEY is not configured. AI features will not work!")
-else:
-    logger.info("Configuration loaded successfully")
+# Log successful configuration loading (critical validation is now part of Settings)
+logger.info("Configuration loaded successfully. Validation for GOOGLE_API_KEY performed by Pydantic model.")
