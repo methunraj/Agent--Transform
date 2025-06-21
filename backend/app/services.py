@@ -304,9 +304,9 @@ def direct_json_to_excel(json_data: str, file_name: str, chunk_size: int, temp_d
                         for match in matches:
                             try: data_objects.append(json.loads(match))
                             except: continue
-
-            if not data_objects: raise ValueError("No valid JSON objects found")
             
+            if not data_objects: raise ValueError("No valid JSON objects found")
+
             asyncio.run(_update_job_if_present(progress_val=0.15, current_step_val="JSON parsing complete"))
             
             data = data_objects[0] if len(data_objects) == 1 else data_objects
@@ -591,56 +591,117 @@ def find_newest_file(directory: str, files_before: set, job_id: Optional[str] = 
     asyncio.run(_update_job_if_present(current_step_val="Searching for output file", progress_val=0.85))
 
     patterns = [os.path.join(directory, "*.xlsx"), os.path.join(directory, "**", "*.xlsx")]
-    max_attempts, attempt_delay = 10, 0.3
+
+    # Adjusted retry parameters for ~30 second total wait time with 10 attempts
+    max_attempts = 10
+    current_delay = 0.25  # Initial delay in seconds
+    backoff_factor = 1.5
+    total_slept_time = 0
     
     files_after = set()
     new_files = set()
 
     for attempt in range(max_attempts):
-        if attempt > 0: time.sleep(attempt_delay); attempt_delay *= 1.2
+        # Perform file search
+        current_files_after_scan = set()
+        for pattern in patterns: current_files_after_scan.update(glob.glob(pattern, recursive=True))
+        files_after.update(current_files_after_scan) # Accumulate files found over attempts, in case of very slow writes
         
-        current_files_after = set()
-        for pattern in patterns: current_files_after.update(glob.glob(pattern, recursive=True))
-        files_after.update(current_files_after)
-        new_files = files_after - files_before
+        new_files_on_this_attempt = files_after - files_before
         
-        if new_files: logger.info(f"File detection ok attempt {attempt+1}. New: {new_files}"); break
-        logger.info(f"File detection attempt {attempt+1}/{max_attempts} - no new files in {directory}")
-        asyncio.run(_update_job_if_present(progress_val=0.85 + (0.1 * (attempt + 1) / max_attempts)))
+        if new_files_on_this_attempt:
+            logger.info(f"File detection: Found {len(new_files_on_this_attempt)} new candidate(s) on attempt {attempt + 1}.")
+            # Check readability and size immediately for candidates found on this attempt
+            # This allows quicker exit if a valid file is found early.
+            # Sort these candidates to check the newest one first.
+            def get_file_sort_key_attempt(f):
+                try: return (os.path.getmtime(f), os.path.getctime(f))
+                except OSError: return (0,0)
+
+            sorted_candidates = sorted(list(new_files_on_this_attempt), key=get_file_sort_key_attempt, reverse=True)
+
+            for candidate_file in sorted_candidates:
+                try:
+                    if os.path.exists(candidate_file) and \
+                       os.access(candidate_file, os.R_OK) and \
+                       os.path.getsize(candidate_file) > 0:
+                        logger.info(f"Valid file found: {candidate_file} (size: {os.path.getsize(candidate_file)}B) on attempt {attempt + 1}.")
+                        asyncio.run(_update_job_if_present(current_step_val="Output file found", progress_val=0.98))
+                        return candidate_file # Exit as soon as a valid file is found
+                except OSError as e_check:
+                    logger.warning(f"Error checking candidate file {candidate_file} on attempt {attempt+1}: {e_check}")
+            # If no valid file found among this attempt's candidates, new_files remains the cumulative set for next logging/final check
+            new_files = new_files_on_this_attempt # Update new_files to what was found in this pass for logging below
+
+        if attempt < max_attempts - 1: # Don't sleep after the last attempt
+            if not new_files_on_this_attempt: # Only log "no new files" if none were found in this specific attempt
+                 logger.info(f"File detection attempt {attempt + 1}/{max_attempts}: No new files yet in {directory}. Sleeping for {current_delay:.2f}s.")
+            else: # Log that candidates were found but none were valid yet
+                 logger.info(f"File detection attempt {attempt + 1}/{max_attempts}: Found candidates, but none valid yet. Sleeping for {current_delay:.2f}s.")
+
+            time.sleep(current_delay)
+            total_slept_time += current_delay
+            current_delay *= backoff_factor
+            asyncio.run(_update_job_if_present(progress_val=0.85 + (0.1 * (attempt + 1) / max_attempts)))
+        elif new_files_on_this_attempt: # Last attempt, and some new files were seen in this last pass
+             logger.info(f"File detection: Last attempt ({max_attempts}/{max_attempts}). Found candidates, but none were valid in the final check pass.")
+        else: # Last attempt, no new files found in this pass
+             logger.info(f"File detection: Last attempt ({max_attempts}/{max_attempts}). No new files found.")
+
 
     if settings.AGNO_DEBUG:
-        logger.info(f"FILE DEBUG: Dir={directory}, Exists={os.path.exists(directory)}, Patterns={patterns}")
+        logger.info(f"FILE DEBUG (after all attempts): Total slept time: {total_slept_time:.2f}s")
+        logger.info(f"Dir={directory}, Exists={os.path.exists(directory)}, Patterns={patterns}")
         logger.info(f"Files Before ({len(files_before)}): {list(files_before)}")
-        logger.info(f"Files After ({len(files_after)}): {list(files_after)}")
+        logger.info(f"Files After (cumulative list of files found across attempts) ({len(files_after)}): {list(files_after)}")
         all_files_in_dir = [os.path.join(r,f) for r,ds,fs in os.walk(directory) for f in fs] if os.path.exists(directory) else []
         logger.info(f"ALL files in dir tree ({len(all_files_in_dir)}): {all_files_in_dir}")
-        logger.info(f"New Files ({len(new_files)}): {list(new_files)}")
+        # new_files here would be the candidates from the *last* attempt if we didn't find a valid one earlier
+        # It's better to log the set of all new files ever considered:
+        all_new_candidates_considered = files_after - files_before
+        logger.info(f"All new candidates considered ({len(all_new_candidates_considered)}): {list(all_new_candidates_considered)}")
 
-    if not new_files:
-        logger.warning(f"No new Excel files in {directory} after {max_attempts} attempts.")
-        asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file not found", result_val={"error": "No output file generated."}))
+    # After the loop, if we haven't returned a file, it means no valid file was found
+    # The `new_files` variable at this stage would reflect candidates from the last attempt,
+    # or an earlier attempt if that's where the loop stopped due to finding candidates (none of which were valid).
+    # It's more accurate to check `all_new_candidates_considered`.
+    if not (files_after - files_before): # No new files ever appeared across all attempts
+        logger.warning(f"No new Excel files appeared in {directory} after {max_attempts} attempts and ~{total_slept_time:.2f}s total sleep time.")
+        asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file not found", result_val={"error": "No output file generated by AI."}))
         return None
     
-    time.sleep(0.2)
+    # If we reach here, it means new files might have appeared at some point, but none passed all validation checks
+    # (exists, readable, size > 0) during the attempts where they were first seen.
+    # We can do one final check on all accumulated new files.
+    final_new_candidates = files_after - files_before
+    logger.info(f"Performing final validation on {len(final_new_candidates)} accumulated new candidates...")
     
-    try:
-        def get_file_sort_key(f):
-            try: return (os.path.getmtime(f), os.path.getctime(f))
-            except OSError: return (0,0)
+    if not final_new_candidates: # Should have been caught by the above, but as a safeguard.
+        logger.warning(f"No new files identified for final validation despite earlier indications.")
+        asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file disappeared or error in logic", result_val={"error": "Output file candidates lost."}))
+        return None
 
-        sorted_new_files = sorted(list(new_files), key=get_file_sort_key, reverse=True)
+    def get_file_sort_key_final(f):
+        try: return (os.path.getmtime(f), os.path.getctime(f))
+        except OSError: return (0,0)
 
-        for potential_file in sorted_new_files:
-            try:
-                if os.path.exists(potential_file) and os.path.getsize(potential_file) > 0:
-                    logger.info(f"Newest file: {potential_file} (size: {os.path.getsize(potential_file)}B)")
-                    asyncio.run(_update_job_if_present(current_step_val="Output file found", progress_val=0.98))
-                    return potential_file
-                else: logger.warning(f"Candidate {potential_file} zero size or gone. Checking next.")
-            except OSError as e_size: logger.warning(f"Error accessing candidate {potential_file} for size: {e_size}")
+    sorted_final_candidates = sorted(list(final_new_candidates), key=get_file_sort_key_final, reverse=True)
 
-        logger.warning(f"All {len(new_files)} new file(s) were empty or inaccessible.")
-        asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file empty/inaccessible", result_val={"error": "Generated file empty."}))
+    for potential_file in sorted_final_candidates:
+        try:
+            if os.path.exists(potential_file) and \
+               os.access(potential_file, os.R_OK) and \
+               os.path.getsize(potential_file) > 0:
+                logger.info(f"Final validation successful: {potential_file} (size: {os.path.getsize(potential_file)}B)")
+                asyncio.run(_update_job_if_present(current_step_val="Output file found (final check)", progress_val=0.98))
+                return potential_file
+            else:
+                logger.warning(f"Final validation: Candidate {potential_file} not valid (exists: {os.path.exists(potential_file)}, readable: {os.access(potential_file, os.R_OK)}, size: {os.path.getsize(potential_file) if os.path.exists(potential_file) else 'N/A'}).")
+        except OSError as e_final_check:
+            logger.warning(f"Error during final validation of {potential_file}: {e_final_check}")
+
+    logger.warning(f"All {len(final_new_candidates)} accumulated new file(s) failed final validation or were inaccessible.")
+    asyncio.run(_update_job_if_present(status_val=JobStatus.FAILED, current_step_val="Output file(s) found but invalid/inaccessible", result_val={"error": "Generated file(s) were invalid or inaccessible."}))
         return None
 
     except Exception as e:
