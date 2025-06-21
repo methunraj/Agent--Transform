@@ -94,23 +94,53 @@ async def lifespan(app: FastAPI):
     # The number of workers should be configurable, e.g., from settings
     num_workers = getattr(settings, 'JOB_WORKERS', 2) # Default to 2 if not in settings
 
+    # --- API Key Validation ---
+    if not settings.SKIP_API_KEY_VALIDATION_ON_STARTUP:
+        if not settings.GOOGLE_API_KEY:
+            logger.critical("CRITICAL: GOOGLE_API_KEY is not set. AI features will be unavailable.")
+            # Consider raising an exception here to halt startup if key is absolutely mandatory
+            # raise RuntimeError("GOOGLE_API_KEY is not configured. Application cannot start.")
+            app_state["API_KEY_VALID"] = False
+        else:
+            try:
+                logger.info("Performing startup API key validation for Google GenAI...")
+                # Use the existing service function which includes genai.configure
+                # list_available_models already has error handling and genai.configure
+                await services.list_available_models() # This will attempt to list models
+                logger.info("Google GenAI API key validation successful (list_models call succeeded).")
+                app_state["API_KEY_VALID"] = True
+            except Exception as e: # Catch broad exceptions as list_models might raise various things
+                                   # including auth errors from google.api_core.exceptions
+                logger.critical(f"CRITICAL: Google GenAI API key validation failed on startup: {e}", exc_info=True)
+                logger.critical("AI features may be unavailable or malfunctioning. Please check GOOGLE_API_KEY and permissions.")
+                app_state["API_KEY_VALID"] = False
+                # Depending on strictness, could raise RuntimeError here to stop app startup
+                # raise RuntimeError(f"Google GenAI API key validation failed: {e}")
+    else:
+        logger.warning("Skipping API key validation on startup as per SKIP_API_KEY_VALIDATION_ON_STARTUP setting.")
+        # Assume valid if skipped, or handle as unknown. For now, let it proceed.
+        app_state["API_KEY_VALID"] = None # Indicates skipped validation
+
+    # --- Job Manager Setup (Redis connection and worker start) ---
     try:
         await job_manager.connect_redis() # Connect JobManager to Redis
-        if job_manager.redis_client: # Start workers only if Redis connection was successful
-            job_manager.start_workers(num_workers)
-            logger.info(f"Application startup complete. Temp directory: {app_state['TEMP_DIR']}. Job workers started: {num_workers}. Connected to Redis.")
-        else:
+        if job_manager.redis_client:
+            if app_state.get("API_KEY_VALID", False) or settings.SKIP_API_KEY_VALIDATION_ON_STARTUP:
+                # Start workers only if Redis connected AND (API key is valid or validation was skipped)
+                job_manager.start_workers(num_workers)
+                logger.info(f"JobManager connected to Redis. Workers started: {num_workers}.")
+            else:
+                logger.warning("JobManager connected to Redis, but workers NOT started due to API key validation failure.")
+            logger.info(f"Application startup: Base setup complete. Temp directory: {app_state['TEMP_DIR']}.")
+        else: # Redis connection failed
             logger.error("Application startup: JobManager failed to connect to Redis. Workers not started.")
-            # Depending on policy, might want to prevent app startup or run in a degraded mode.
-            # For now, it will run without workers if Redis fails.
-            logger.info(f"Application startup complete but JobManager NOT connected to Redis. Temp directory: {app_state['TEMP_DIR']}.")
+            logger.info(f"Application startup: Base setup complete but JobManager NOT connected to Redis. Temp directory: {app_state['TEMP_DIR']}.")
 
     except Exception as e:
         logger.error(f"Error during JobManager Redis connection or worker startup: {e}", exc_info=True)
-        # Application will continue to start, but job processing will likely fail or not occur.
-        logger.info(f"Application startup complete with errors in JobManager setup. Temp directory: {app_state['TEMP_DIR']}.")
-
+        logger.info(f"Application startup: Base setup complete with errors in JobManager setup. Temp directory: {app_state['TEMP_DIR']}.")
     
+    logger.info("FastAPI application startup sequence finished.")
     yield  # Application is now running
     
     # Shutdown

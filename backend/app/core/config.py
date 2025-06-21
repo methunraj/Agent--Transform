@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     REDIS_JOB_QUEUE_KEY: str = "intelliextract_job_queue"
     REDIS_JOB_KEY_PREFIX: str = "intelliextract_job:"
     REDIS_JOB_TTL_SECONDS: int = 24 * 3600  # 24 hours
+
+    # API Key Validation Setting
+    SKIP_API_KEY_VALIDATION_ON_STARTUP: bool = os.getenv("SKIP_API_KEY_VALIDATION_ON_STARTUP", "false").lower() == "true"
     
     @validator('GOOGLE_API_KEY')
     def validate_google_api_key(cls, v):
